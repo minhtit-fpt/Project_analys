@@ -1,3 +1,0 @@
-# This file ensures the data directory is tracked by git
-# CSV data files will be stored here with naming convention:
-# binance_future_coins_{listing_year}_to_{current_year}.csv
