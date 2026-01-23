@@ -1,0 +1,3 @@
+# This directory contains daily log files
+# Files are named: etl_YYYYMMDD.log
+# This directory is ignored by git (see .gitignore)
