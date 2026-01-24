@@ -55,7 +55,7 @@ class BinanceFutureFetcher:
         os.makedirs(log_dir, exist_ok=True)
         
         logging.basicConfig(
-            level=logging.INFO,
+            level=logging.ERROR,
             format='%(asctime)s - %(levelname)s - %(message)s',
             handlers=[
                 logging.FileHandler(f'{log_dir}/binance_fetcher_{datetime.now().strftime("%Y%m%d")}.log'),
@@ -310,11 +310,28 @@ class BinanceFutureFetcher:
         
         for year, dataframes in self.data_store.items():
             try:
-                # Generate filename
-                filename = f"{output_dir}/Binance_{year}_to_{current_date}.xlsx"
+                # Generate filename with current date
+                filename = f"{output_dir}/Binance_{year}_to_{current_date}.csv"
                 
-                # Create Excel writer
-                with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+                # Check and remove old files for this year if new date is greater
+                import glob
+                pattern = f"{output_dir}/Binance_{year}_to_*.csv"
+                existing_files = glob.glob(pattern)
+                
+                for old_file in existing_files:
+                    if old_file != filename:
+                        # Extract date from old filename
+                        try:
+                            old_date = old_file.split('_to_')[1].replace('.csv', '')
+                            # Compare dates
+                            if current_date > old_date:
+                                os.remove(old_file)
+                                self.logger.info(f"  Removed old file: {old_file}")
+                        except Exception as e:
+                            self.logger.warning(f"  Could not process old file {old_file}: {e}")
+                
+                # Create Excel writer (will override if same filename exists)
+                with pd.ExcelWriter(filename, engine='openpyxl', mode='w') as writer:
                     total_records = 0
                     coins_saved = []
                     
