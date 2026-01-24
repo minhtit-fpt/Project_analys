@@ -14,6 +14,8 @@ from tqdm import tqdm
 import os
 import logging
 from collections import defaultdict
+from openpyxl import Workbook
+from openpyxl.utils.dataframe import dataframe_to_rows
 
 
 class BinanceFutureFetcher:
@@ -290,7 +292,8 @@ class BinanceFutureFetcher:
     
     def _save_by_year(self):
         """
-        Save grouped data to CSV files by listing year.
+        Save grouped data to Excel files by listing year.
+        Each coin gets its own sheet within the year's Excel file.
         """
         if not self.data_store:
             self.logger.warning("No data to save.")
@@ -302,29 +305,51 @@ class BinanceFutureFetcher:
         current_date = datetime.now().strftime('%Y-%m-%d')
         
         self.logger.info("=" * 80)
-        self.logger.info("Saving data to CSV files...")
+        self.logger.info("Saving data to Excel files (each coin = 1 sheet)...")
         self.logger.info("=" * 80)
         
         for year, dataframes in self.data_store.items():
             try:
-                # Concatenate all dataframes for this year
-                combined_df = pd.concat(dataframes, ignore_index=True)
-                
-                # Sort by date
-                combined_df = combined_df.sort_values(['symbol', 'date'])
-                
                 # Generate filename
-                filename = f"{output_dir}/Binance_{year}_to_{current_date}.csv"
+                filename = f"{output_dir}/Binance_{year}_to_{current_date}.xlsx"
                 
-                # Save to CSV
-                combined_df.to_csv(filename, index=False)
+                # Create Excel writer
+                with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+                    total_records = 0
+                    coins_saved = []
+                    
+                    for df in dataframes:
+                        if df.empty:
+                            continue
+                        
+                        # Get unique symbol for this dataframe
+                        symbol = df['symbol'].iloc[0]
+                        
+                        # Clean sheet name (Excel has restrictions)
+                        # Remove forward slash and limit to 31 characters
+                        sheet_name = symbol.replace('/', '_').replace(':', '_')[:31]
+                        
+                        # Sort by date
+                        df_sorted = df.sort_values('date')
+                        
+                        # Write to Excel sheet
+                        df_sorted.to_excel(writer, sheet_name=sheet_name, index=False)
+                        
+                        total_records += len(df_sorted)
+                        coins_saved.append(symbol)
+                        
+                        self.logger.info(f"  ✓ {symbol}: {len(df_sorted)} records → sheet '{sheet_name}'")
                 
-                self.logger.info(f"✓ Saved {len(combined_df)} records for year {year}")
+                self.logger.info(f"\n✓ Saved year {year} to Excel")
                 self.logger.info(f"  File: {filename}")
-                self.logger.info(f"  Coins: {combined_df['symbol'].nunique()}")
+                self.logger.info(f"  Total sheets (coins): {len(coins_saved)}")
+                self.logger.info(f"  Total records: {total_records}")
+                self.logger.info(f"  Coins: {', '.join(coins_saved[:5])}{'...' if len(coins_saved) > 5 else ''}\n")
                 
             except Exception as e:
                 self.logger.error(f"Error saving data for year {year}: {e}")
+                import traceback
+                self.logger.error(traceback.format_exc())
         
         self.logger.info("=" * 80)
         self.logger.info("Data fetching and saving completed successfully!")
