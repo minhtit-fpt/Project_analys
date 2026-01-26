@@ -43,3 +43,6 @@ data/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# json
+*.json

@@ -311,18 +311,18 @@ class BinanceFutureFetcher:
         for year, dataframes in self.data_store.items():
             try:
                 # Generate filename with current date
-                filename = f"{output_dir}/Binance_{year}_to_{current_date}.csv"
+                filename = f"{output_dir}/Binance_{year}_to_{current_date}.xlsx"
                 
                 # Check and remove old files for this year if new date is greater
                 import glob
-                pattern = f"{output_dir}/Binance_{year}_to_*.csv"
+                pattern = f"{output_dir}/Binance_{year}_to_*.xlsx"
                 existing_files = glob.glob(pattern)
                 
                 for old_file in existing_files:
                     if old_file != filename:
                         # Extract date from old filename
                         try:
-                            old_date = old_file.split('_to_')[1].replace('.csv', '')
+                            old_date = old_file.split('_to_')[1].replace('.xlsx', '')
                             # Compare dates
                             if current_date > old_date:
                                 os.remove(old_file)
