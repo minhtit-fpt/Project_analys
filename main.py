@@ -18,7 +18,7 @@ import tempfile
 from collections import defaultdict
 from openpyxl import Workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
-from dotenv import load_dotenv, set_key
+from dotenv import load_dotenv
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
@@ -82,6 +82,7 @@ class BinanceFutureFetcher:
         """
         Initialize Google Drive API service using OAuth 2.0 authentication.
         Reads OAuth credentials and tokens from environment variables.
+        Validates existing refresh token and re-authenticates if necessary.
         """
         try:
             # Get configuration from environment variables
@@ -96,49 +97,77 @@ class BinanceFutureFetcher:
             if not client_id or not client_secret:
                 raise ValueError("GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be set in .env file")
             
+            # Clean refresh token (remove quotes if present)
+            if refresh_token:
+                refresh_token = refresh_token.strip().strip("'\"")
+                if not refresh_token:
+                    refresh_token = None
+            
             # Define the scopes required for Google Drive API
             SCOPES = ['https://www.googleapis.com/auth/drive.file']
             
             creds = None
+            needs_reauth = False
             
             # Try to use existing refresh token
             if refresh_token:
-                creds = Credentials(
-                    token=None,
-                    refresh_token=refresh_token,
-                    token_uri='https://oauth2.googleapis.com/token',
-                    client_id=client_id,
-                    client_secret=client_secret,
-                    scopes=SCOPES
-                )
-            
-            # If credentials are not valid, refresh or re-authenticate
-            if not creds or not creds.valid:
-                if creds and creds.expired and creds.refresh_token:
-                    creds.refresh(Request())
-                    self.logger.info("Google Drive credentials refreshed successfully")
-                else:
-                    # Need to perform OAuth flow
-                    self.logger.info("Starting OAuth 2.0 authentication flow...")
-                    flow = InstalledAppFlow.from_client_config(
-                        {
-                            "installed": {
-                                "client_id": client_id,
-                                "client_secret": client_secret,
-                                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                                "token_uri": "https://oauth2.googleapis.com/token",
-                                "redirect_uris": ["http://localhost"]
-                            }
-                        },
-                        SCOPES
+                self.logger.info("Found existing refresh token, attempting to use it...")
+                try:
+                    creds = Credentials(
+                        token=None,
+                        refresh_token=refresh_token,
+                        token_uri='https://oauth2.googleapis.com/token',
+                        client_id=client_id,
+                        client_secret=client_secret,
+                        scopes=SCOPES
                     )
-                    creds = flow.run_local_server(port=0)
                     
-                    # Save the refresh token to .env file for future use
-                    if creds.refresh_token:
-                        env_path = os.path.join(os.path.dirname(__file__), '.env')
-                        set_key(env_path, 'GOOGLE_REFRESH_TOKEN', creds.refresh_token)
-                        self.logger.info("Refresh token saved to .env file")
+                    # Force refresh to validate the token
+                    creds.refresh(Request())
+                    self.logger.info("Successfully refreshed credentials using existing refresh token")
+                    
+                    # Validate by making a test API call
+                    test_service = build('drive', 'v3', credentials=creds)
+                    test_service.files().list(pageSize=1).execute()
+                    self.logger.info("Refresh token validated successfully")
+                    
+                except Exception as e:
+                    self.logger.warning(f"Existing refresh token is invalid or expired: {e}")
+                    self.logger.info("Will trigger re-authentication...")
+                    creds = None
+                    needs_reauth = True
+            else:
+                self.logger.info("No refresh token found, authentication required")
+                needs_reauth = True
+            
+            # Perform OAuth flow if needed
+            if creds is None or needs_reauth:
+                self.logger.info("Starting OAuth 2.0 authentication flow...")
+                print("\n" + "=" * 60)
+                print("Google Drive Authentication Required")
+                print("A browser window will open for you to log in.")
+                print("=" * 60 + "\n")
+                
+                flow = InstalledAppFlow.from_client_config(
+                    {
+                        "installed": {
+                            "client_id": client_id,
+                            "client_secret": client_secret,
+                            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                            "token_uri": "https://oauth2.googleapis.com/token",
+                            "redirect_uris": ["http://localhost"]
+                        }
+                    },
+                    SCOPES
+                )
+                creds = flow.run_local_server(port=0)
+                
+                # Save the new refresh token to .env file
+                if creds.refresh_token:
+                    self._save_refresh_token(creds.refresh_token)
+                    self.logger.info("New refresh token saved to .env file")
+                else:
+                    self.logger.warning("No refresh token received from OAuth flow")
             
             # Build the Google Drive API service
             self.drive_service = build('drive', 'v3', credentials=creds)
@@ -147,6 +176,43 @@ class BinanceFutureFetcher:
             
         except Exception as e:
             self.logger.error(f"Error initializing Google Drive service: {e}")
+            raise
+    
+    def _save_refresh_token(self, refresh_token: str):
+        """
+        Save the refresh token to the .env file.
+        
+        Args:
+            refresh_token: The OAuth refresh token to save
+        """
+        try:
+            env_path = os.path.join(os.path.dirname(__file__), '.env')
+            
+            # Read the current .env file
+            with open(env_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            
+            # Find and update the GOOGLE_REFRESH_TOKEN line
+            token_found = False
+            for i, line in enumerate(lines):
+                if line.startswith('GOOGLE_REFRESH_TOKEN='):
+                    lines[i] = f'GOOGLE_REFRESH_TOKEN={refresh_token}\n'
+                    token_found = True
+                    break
+            
+            # If not found, append it
+            if not token_found:
+                lines.append(f'\nGOOGLE_REFRESH_TOKEN={refresh_token}\n')
+            
+            # Write back to .env file
+            with open(env_path, 'w', encoding='utf-8') as f:
+                f.writelines(lines)
+            
+            # Also update the environment variable in current session
+            os.environ['GOOGLE_REFRESH_TOKEN'] = refresh_token
+            
+        except Exception as e:
+            self.logger.error(f"Failed to save refresh token to .env file: {e}")
             raise
     
     def _list_drive_files(self, name_pattern: str = None) -> List[Dict]:
