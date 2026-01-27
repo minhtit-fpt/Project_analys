@@ -13,9 +13,20 @@ from typing import Dict, List, Optional
 from tqdm import tqdm
 import os
 import logging
+import glob
+import tempfile
 from collections import defaultdict
 from openpyxl import Workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
+from dotenv import load_dotenv, set_key
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+
+# Load environment variables from .env file
+load_dotenv()
 
 
 class BinanceFutureFetcher:
@@ -49,6 +60,9 @@ class BinanceFutureFetcher:
         # Setup logging
         self._setup_logging()
         
+        # Initialize Google Drive service
+        self._setup_google_drive()
+        
     def _setup_logging(self):
         """Configure logging for the application."""
         log_dir = 'logs'
@@ -63,6 +77,176 @@ class BinanceFutureFetcher:
             ]
         )
         self.logger = logging.getLogger(__name__)
+    
+    def _setup_google_drive(self):
+        """
+        Initialize Google Drive API service using OAuth 2.0 authentication.
+        Reads OAuth credentials and tokens from environment variables.
+        """
+        try:
+            # Get configuration from environment variables
+            self.drive_folder_id = os.getenv('GOOGLE_DRIVE_FOLDER_ID')
+            client_id = os.getenv('GOOGLE_CLIENT_ID')
+            client_secret = os.getenv('GOOGLE_CLIENT_SECRET')
+            refresh_token = os.getenv('GOOGLE_REFRESH_TOKEN')
+            
+            if not self.drive_folder_id:
+                raise ValueError("GOOGLE_DRIVE_FOLDER_ID environment variable is not set")
+            
+            if not client_id or not client_secret:
+                raise ValueError("GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be set in .env file")
+            
+            # Define the scopes required for Google Drive API
+            SCOPES = ['https://www.googleapis.com/auth/drive.file']
+            
+            creds = None
+            
+            # Try to use existing refresh token
+            if refresh_token:
+                creds = Credentials(
+                    token=None,
+                    refresh_token=refresh_token,
+                    token_uri='https://oauth2.googleapis.com/token',
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    scopes=SCOPES
+                )
+            
+            # If credentials are not valid, refresh or re-authenticate
+            if not creds or not creds.valid:
+                if creds and creds.expired and creds.refresh_token:
+                    creds.refresh(Request())
+                    self.logger.info("Google Drive credentials refreshed successfully")
+                else:
+                    # Need to perform OAuth flow
+                    self.logger.info("Starting OAuth 2.0 authentication flow...")
+                    flow = InstalledAppFlow.from_client_config(
+                        {
+                            "installed": {
+                                "client_id": client_id,
+                                "client_secret": client_secret,
+                                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                                "token_uri": "https://oauth2.googleapis.com/token",
+                                "redirect_uris": ["http://localhost"]
+                            }
+                        },
+                        SCOPES
+                    )
+                    creds = flow.run_local_server(port=0)
+                    
+                    # Save the refresh token to .env file for future use
+                    if creds.refresh_token:
+                        env_path = os.path.join(os.path.dirname(__file__), '.env')
+                        set_key(env_path, 'GOOGLE_REFRESH_TOKEN', creds.refresh_token)
+                        self.logger.info("Refresh token saved to .env file")
+            
+            # Build the Google Drive API service
+            self.drive_service = build('drive', 'v3', credentials=creds)
+            
+            self.logger.info("Google Drive service initialized successfully")
+            
+        except Exception as e:
+            self.logger.error(f"Error initializing Google Drive service: {e}")
+            raise
+    
+    def _list_drive_files(self, name_pattern: str = None) -> List[Dict]:
+        """
+        List files in the Google Drive folder.
+        
+        Args:
+            name_pattern: Optional pattern to filter files by name
+            
+        Returns:
+            List of file metadata dictionaries with 'id' and 'name'
+        """
+        try:
+            query = f"'{self.drive_folder_id}' in parents and trashed = false"
+            
+            if name_pattern:
+                query += f" and name contains '{name_pattern}'"
+            
+            results = self.drive_service.files().list(
+                q=query,
+                spaces='drive',
+                fields='files(id, name)'
+            ).execute()
+            
+            return results.get('files', [])
+            
+        except Exception as e:
+            self.logger.error(f"Error listing files from Google Drive: {e}")
+            return []
+    
+    def _delete_drive_file(self, file_id: str) -> bool:
+        """
+        Delete a file from Google Drive.
+        
+        Args:
+            file_id: The ID of the file to delete
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            self.drive_service.files().delete(fileId=file_id).execute()
+            return True
+        except Exception as e:
+            self.logger.error(f"Error deleting file {file_id} from Google Drive: {e}")
+            return False
+    
+    def _upload_to_drive(self, file_path: str, filename: str) -> Optional[str]:
+        """
+        Upload a file to Google Drive.
+        
+        Args:
+            file_path: Local path to the file to upload
+            filename: Name to give the file in Google Drive
+            
+        Returns:
+            File ID if successful, None otherwise
+        """
+        try:
+            file_metadata = {
+                'name': filename,
+                'parents': [self.drive_folder_id]
+            }
+            
+            # Determine MIME type based on file extension
+            mime_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            
+            media = MediaFileUpload(
+                file_path,
+                mimetype=mime_type,
+                resumable=True
+            )
+            
+            # Check if file with same name already exists
+            existing_files = self._list_drive_files(filename)
+            for existing_file in existing_files:
+                if existing_file['name'] == filename:
+                    # Update existing file
+                    updated_file = self.drive_service.files().update(
+                        fileId=existing_file['id'],
+                        media_body=media
+                    ).execute()
+                    self.logger.info(f"Updated existing file: {filename}")
+                    return updated_file.get('id')
+            
+            # Create new file
+            file = self.drive_service.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields='id'
+            ).execute()
+            
+            self.logger.info(f"Uploaded new file: {filename}")
+            return file.get('id')
+            
+        except Exception as e:
+            self.logger.error(f"Error uploading file to Google Drive: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+            return None
     
     def get_markets(self) -> List[str]:
         """
@@ -292,76 +476,90 @@ class BinanceFutureFetcher:
     
     def _save_by_year(self):
         """
-        Save grouped data to Excel files by listing year.
+        Save grouped data to Excel files by listing year and upload to Google Drive.
         Each coin gets its own sheet within the year's Excel file.
+        Old files with outdated dates are removed from Google Drive.
         """
         if not self.data_store:
             self.logger.warning("No data to save.")
             return
         
-        output_dir = 'data/binance_future'
-        os.makedirs(output_dir, exist_ok=True)
-        
         current_date = datetime.now().strftime('%Y-%m-%d')
         
         self.logger.info("=" * 80)
-        self.logger.info("Saving data to Excel files (each coin = 1 sheet)...")
+        self.logger.info("Saving data to Excel files and uploading to Google Drive (each coin = 1 sheet)...")
         self.logger.info("=" * 80)
         
         for year, dataframes in self.data_store.items():
             try:
                 # Generate filename with current date
-                filename = f"{output_dir}/Binance_{year}_to_{current_date}.xlsx"
+                filename = f"Binance_{year}_to_{current_date}.xlsx"
                 
-                # Check and remove old files for this year if new date is greater
-                import glob
-                pattern = f"{output_dir}/Binance_{year}_to_*.xlsx"
-                existing_files = glob.glob(pattern)
+                # Check and remove old files for this year from Google Drive
+                pattern = f"Binance_{year}_to_"
+                existing_files = self._list_drive_files(pattern)
                 
                 for old_file in existing_files:
-                    if old_file != filename:
+                    if old_file['name'] != filename:
                         # Extract date from old filename
                         try:
-                            old_date = old_file.split('_to_')[1].replace('.xlsx', '')
+                            old_date = old_file['name'].split('_to_')[1].replace('.xlsx', '')
                             # Compare dates
                             if current_date > old_date:
-                                os.remove(old_file)
-                                self.logger.info(f"  Removed old file: {old_file}")
+                                if self._delete_drive_file(old_file['id']):
+                                    self.logger.info(f"  Removed old file from Google Drive: {old_file['name']}")
                         except Exception as e:
-                            self.logger.warning(f"  Could not process old file {old_file}: {e}")
+                            self.logger.warning(f"  Could not process old file {old_file['name']}: {e}")
                 
-                # Create Excel writer (will override if same filename exists)
-                with pd.ExcelWriter(filename, engine='openpyxl', mode='w') as writer:
-                    total_records = 0
-                    coins_saved = []
+                # Create a temporary file to write Excel data
+                with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as tmp_file:
+                    temp_path = tmp_file.name
+                
+                try:
+                    # Create Excel writer using temporary file
+                    with pd.ExcelWriter(temp_path, engine='openpyxl', mode='w') as writer:
+                        total_records = 0
+                        coins_saved = []
+                        
+                        for df in dataframes:
+                            if df.empty:
+                                continue
+                            
+                            # Get unique symbol for this dataframe
+                            symbol = df['symbol'].iloc[0]
+                            
+                            # Clean sheet name (Excel has restrictions)
+                            # Remove forward slash and limit to 31 characters
+                            sheet_name = symbol.replace('/', '_').replace(':', '_')[:31]
+                            
+                            # Sort by date
+                            df_sorted = df.sort_values('date')
+                            
+                            # Write to Excel sheet
+                            df_sorted.to_excel(writer, sheet_name=sheet_name, index=False)
+                            
+                            total_records += len(df_sorted)
+                            coins_saved.append(symbol)
+                            
+                            self.logger.info(f"  ✓ {symbol}: {len(df_sorted)} records → sheet '{sheet_name}'")
                     
-                    for df in dataframes:
-                        if df.empty:
-                            continue
+                    # Upload the Excel file to Google Drive
+                    file_id = self._upload_to_drive(temp_path, filename)
+                    
+                    if file_id:
+                        self.logger.info(f"\n✓ Saved year {year} to Google Drive")
+                        self.logger.info(f"  File: {filename}")
+                        self.logger.info(f"  Google Drive File ID: {file_id}")
+                        self.logger.info(f"  Total sheets (coins): {len(coins_saved)}")
+                        self.logger.info(f"  Total records: {total_records}")
+                        self.logger.info(f"  Coins: {', '.join(coins_saved[:5])}{'...' if len(coins_saved) > 5 else ''}\n")
+                    else:
+                        self.logger.error(f"Failed to upload {filename} to Google Drive")
                         
-                        # Get unique symbol for this dataframe
-                        symbol = df['symbol'].iloc[0]
-                        
-                        # Clean sheet name (Excel has restrictions)
-                        # Remove forward slash and limit to 31 characters
-                        sheet_name = symbol.replace('/', '_').replace(':', '_')[:31]
-                        
-                        # Sort by date
-                        df_sorted = df.sort_values('date')
-                        
-                        # Write to Excel sheet
-                        df_sorted.to_excel(writer, sheet_name=sheet_name, index=False)
-                        
-                        total_records += len(df_sorted)
-                        coins_saved.append(symbol)
-                        
-                        self.logger.info(f"  ✓ {symbol}: {len(df_sorted)} records → sheet '{sheet_name}'")
-                
-                self.logger.info(f"\n✓ Saved year {year} to Excel")
-                self.logger.info(f"  File: {filename}")
-                self.logger.info(f"  Total sheets (coins): {len(coins_saved)}")
-                self.logger.info(f"  Total records: {total_records}")
-                self.logger.info(f"  Coins: {', '.join(coins_saved[:5])}{'...' if len(coins_saved) > 5 else ''}\n")
+                finally:
+                    # Clean up temporary file
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
                 
             except Exception as e:
                 self.logger.error(f"Error saving data for year {year}: {e}")
@@ -369,7 +567,7 @@ class BinanceFutureFetcher:
                 self.logger.error(traceback.format_exc())
         
         self.logger.info("=" * 80)
-        self.logger.info("Data fetching and saving completed successfully!")
+        self.logger.info("Data fetching and uploading to Google Drive completed successfully!")
         self.logger.info("=" * 80)
 
 
