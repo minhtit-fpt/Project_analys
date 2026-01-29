@@ -9,10 +9,17 @@ Architecture:
     - GetData: Data retrieval from Binance
     - SaveData: Data saving and file management
     - GoogleDriveAPI: Google Drive API interactions
+    - GUI: Optional graphical interface using CustomTkinter
+
+Usage:
+    - GUI Mode (default): python main.py
+    - CLI Mode: python main.py --cli
 """
 
 import os
+import sys
 import logging
+import argparse
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -93,6 +100,7 @@ class Main:
         self.logger.info("  → Initializing Data Saver...")
         self.data_saver = SaveData(
             google_drive_api=self.google_drive_api,
+            timeframe=self.timeframe,
             logger=self.logger
         )
         
@@ -134,10 +142,8 @@ class Main:
             raise
 
 
-def main():
-    """
-    Entry point for the application.
-    """
+def run_cli():
+    """Run the application in CLI mode."""
     try:
         # Initialize and run the main orchestrator
         app = Main(price_threshold=10.0, timeframe='1d')
@@ -148,6 +154,64 @@ def main():
     except Exception as e:
         logging.error(f"Critical error in main execution: {e}")
         raise
+
+
+def run_gui():
+    """Run the application in GUI mode."""
+    try:
+        from src.gui import BinanceFetcherGUI
+        
+        app = BinanceFetcherGUI()
+        app.protocol("WM_DELETE_WINDOW", app.on_closing)
+        app.mainloop()
+        
+    except ImportError as e:
+        print(f"Error: Could not import GUI components. Make sure customtkinter is installed.")
+        print(f"Install with: pip install customtkinter")
+        print(f"Details: {e}")
+        sys.exit(1)
+    except Exception as e:
+        logging.error(f"Critical error in GUI execution: {e}")
+        raise
+
+
+def main():
+    """
+    Entry point for the application.
+    Supports both GUI and CLI modes.
+    """
+    parser = argparse.ArgumentParser(
+        description="Binance Futures Historical Data Fetcher",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python main.py          # Run with GUI (default)
+  python main.py --gui    # Run with GUI
+  python main.py --cli    # Run in command-line mode
+        """
+    )
+    
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        '--gui',
+        action='store_true',
+        default=True,
+        help='Run with graphical user interface (default)'
+    )
+    mode_group.add_argument(
+        '--cli',
+        action='store_true',
+        help='Run in command-line mode without GUI'
+    )
+    
+    args = parser.parse_args()
+    
+    if args.cli:
+        print("Running in CLI mode...")
+        run_cli()
+    else:
+        print("Starting GUI...")
+        run_gui()
 
 
 if __name__ == "__main__":
