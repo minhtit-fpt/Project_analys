@@ -26,15 +26,17 @@ class SaveData:
     - Delegate upload operations to GoogleDriveAPI
     """
     
-    def __init__(self, google_drive_api: GoogleDriveAPI, logger: logging.Logger = None):
+    def __init__(self, google_drive_api: GoogleDriveAPI, timeframe: str = '1d', logger: logging.Logger = None):
         """
         Initialize the data saver.
         
         Args:
             google_drive_api: GoogleDriveAPI instance for file uploads
+            timeframe: Candle timeframe for filename (default: '1d')
             logger: Optional logger instance. If not provided, creates a new one.
         """
         self.google_drive = google_drive_api
+        self.timeframe = timeframe
         self.logger = logger or logging.getLogger(__name__)
     
     def save_by_year(self, data_store: Dict[int, List[pd.DataFrame]]):
@@ -58,8 +60,8 @@ class SaveData:
         
         for year, dataframes in data_store.items():
             try:
-                # Generate filename with current date
-                filename = f"Binance_{year}_to_{current_date}.xlsx"
+                # Generate filename with timeframe and current date
+                filename = f"Binance_timeframe:{self.timeframe}_{year}_to_{current_date}.xlsx"
                 
                 # Remove old files for this year from Google Drive
                 self._cleanup_old_files(year, filename, current_date)
@@ -86,7 +88,7 @@ class SaveData:
             current_date: The current date string for comparison
         """
         # Check and remove old files for this year from Google Drive
-        pattern = f"Binance_{year}_to_"
+        pattern = f"Binance_timeframe:{self.timeframe}_{year}_to_"
         existing_files = self.google_drive.list_files(pattern)
         
         for old_file in existing_files:
