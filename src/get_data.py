@@ -222,19 +222,62 @@ class GetData:
             self.logger.error(f"Error fetching candles for {symbol}: {e}")
             return None
     
-    def fetch_all_data(self) -> dict:
+    def get_year_range(self) -> tuple:
         """
-        Fetch data for all filtered symbols and group by listing year.
+        Get the range of years that have available data.
         
         Returns:
-            Dictionary with years as keys and list of DataFrames as values
+            Tuple of (min_year, max_year) or (None, None) if no data available
+        """
+        self.logger.info("Detecting year range for available data...")
+        
+        # Get filtered markets
+        symbols = self.get_markets()
+        
+        if not symbols:
+            self.logger.error("No symbols found.")
+            return (None, None)
+        
+        min_year = None
+        max_year = datetime.now().year
+        
+        # Sample symbols to find the earliest listing date
+        sample_size = min(10, len(symbols))
+        self.logger.info(f"Sampling {sample_size} symbols to detect year range...")
+        
+        for symbol in symbols[:sample_size]:
+            try:
+                listing_timestamp = self._detect_listing_date(symbol)
+                if listing_timestamp:
+                    listing_date = datetime.fromtimestamp(listing_timestamp / 1000)
+                    listing_year = listing_date.year
+                    
+                    if min_year is None or listing_year < min_year:
+                        min_year = listing_year
+                        
+            except Exception as e:
+                self.logger.error(f"Error detecting year for {symbol}: {e}")
+                continue
+        
+        if min_year is None:
+            min_year = 2019  # Default to Binance Futures start year
+        
+        self.logger.info(f"Year range detected: {min_year} to {max_year}")
+        return (min_year, max_year)
+    
+    def fetch_data_for_year(self, target_year: int) -> dict:
+        """
+        Fetch data for all symbols listed in a specific year.
+        
+        Args:
+            target_year: The year to fetch data for
+            
+        Returns:
+            Dictionary with the target year as key and list of DataFrames as value
         """
         self.logger.info("=" * 80)
-        self.logger.info("Starting data fetch from Binance Futures")
+        self.logger.info(f"Fetching data for year {target_year}")
         self.logger.info("=" * 80)
-        
-        # Clear previous data
-        self.data_store = defaultdict(list)
         
         # Get filtered markets
         symbols = self.get_markets()
@@ -243,23 +286,26 @@ class GetData:
             self.logger.error("No symbols found.")
             return {}
         
-        self.logger.info(f"Processing {len(symbols)} symbols...")
+        year_data = []
+        
+        self.logger.info(f"Processing {len(symbols)} symbols for year {target_year}...")
         
         # Iterate through symbols with progress bar
-        for symbol in tqdm(symbols, desc="Fetching historical data", unit="coin"):
+        for symbol in tqdm(symbols, desc=f"Fetching data for {target_year}", unit="coin"):
             try:
-                self.logger.info(f"Processing {symbol}...")
-                
                 # Detect listing date
                 listing_timestamp = self._detect_listing_date(symbol)
                 
                 if not listing_timestamp:
-                    self.logger.warning(f"Could not detect listing date for {symbol}. Skipping...")
                     continue
                 
                 # Get listing year
                 listing_date = datetime.fromtimestamp(listing_timestamp / 1000)
                 listing_year = listing_date.year
+                
+                # Only process symbols listed in the target year
+                if listing_year != target_year:
+                    continue
                 
                 self.logger.info(f"{symbol} listed in {listing_year}")
                 
@@ -270,8 +316,7 @@ class GetData:
                     self.logger.warning(f"No data fetched for {symbol}. Skipping...")
                     continue
                 
-                # Group by listing year
-                self.data_store[listing_year].append(df)
+                year_data.append(df)
                 
                 self.logger.info(f"Successfully fetched {len(df)} candles for {symbol}")
                 
@@ -279,8 +324,11 @@ class GetData:
                 self.logger.error(f"Unexpected error processing {symbol}: {e}")
                 continue
         
-        self.logger.info("=" * 80)
-        self.logger.info("Data fetching completed")
-        self.logger.info("=" * 80)
+        if year_data:
+            self.logger.info(f"Completed fetching data for year {target_year}: {len(year_data)} coins")
+        else:
+            self.logger.info(f"No coins found listed in year {target_year}")
         
-        return dict(self.data_store)
+        return {target_year: year_data} if year_data else {}
+    
+    

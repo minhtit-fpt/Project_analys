@@ -111,28 +111,48 @@ class Main:
         Execute the main data pipeline.
         
         Steps:
-            1. Fetch data from Binance (via GetData)
-            2. Save data to Google Drive (via SaveData)
+            1. Detect year range with available data
+            2. For each year: fetch data → immediately save to Google Drive
         """
         self.logger.info("=" * 80)
         self.logger.info("Starting Binance Futures Historical Data Fetcher")
         self.logger.info("=" * 80)
         
         try:
-            # Step 1: Fetch all data from Binance
-            self.logger.info("Step 1: Fetching data from Binance...")
-            data_store = self.data_fetcher.fetch_all_data()
+            # Step 1: Get the range of years to process
+            self.logger.info("Step 1: Detecting year range...")
+            min_year, max_year = self.data_fetcher.get_year_range()
             
-            if not data_store:
-                self.logger.error("No data fetched. Exiting...")
+            if min_year is None or max_year is None:
+                self.logger.error("Could not determine year range. Exiting...")
                 return
             
-            # Step 2: Save data to Google Drive
-            self.logger.info("Step 2: Saving data to Google Drive...")
-            self.data_saver.save_by_year(data_store)
+            self.logger.info(f"Will process years from {min_year} to {max_year}")
+            
+            # Step 2: Process each year sequentially (fetch → save → next year)
+            total_years = max_year - min_year + 1
+            self.logger.info(f"\nProcessing {total_years} year(s) sequentially...\n")
+            
+            for year in range(min_year, max_year + 1):
+                self.logger.info("#" * 80)
+                self.logger.info(f"Processing Year {year} ({year - min_year + 1}/{total_years})")
+                self.logger.info("#" * 80)
+                
+                # Fetch data for this specific year
+                year_data = self.data_fetcher.fetch_data_for_year(year)
+                
+                # Immediately save to Google Drive if data was fetched
+                if year_data and year in year_data and year_data[year]:
+                    self.logger.info(f"Saving data for year {year} to Google Drive...")
+                    self.data_saver.save_single_year(year, year_data[year])
+                else:
+                    self.logger.info(f"No data to save for year {year}. Moving to next year...")
+                
+                self.logger.info(f"\nCompleted processing year {year}\n")
             
             self.logger.info("=" * 80)
             self.logger.info("Pipeline completed successfully!")
+            self.logger.info("All years have been processed and uploaded to Google Drive.")
             self.logger.info("=" * 80)
             
         except Exception as e:

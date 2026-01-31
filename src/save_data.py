@@ -39,44 +39,44 @@ class SaveData:
         self.timeframe = timeframe
         self.logger = logger or logging.getLogger(__name__)
     
-    def save_by_year(self, data_store: Dict[int, List[pd.DataFrame]]):
+    def save_single_year(self, year: int, dataframes: List[pd.DataFrame]):
         """
-        Save grouped data to Excel files by listing year and upload to Google Drive.
+        Save data for a single year to Excel file and upload to Google Drive immediately.
         Each coin gets its own sheet within the year's Excel file.
         Old files with outdated dates are removed from Google Drive.
         
         Args:
-            data_store: Dictionary with years as keys and list of DataFrames as values
+            year: The year to save data for
+            dataframes: List of DataFrames for this year
         """
-        if not data_store:
-            self.logger.warning("No data to save.")
+        if not dataframes:
+            self.logger.warning(f"No data to save for year {year}.")
             return
         
         current_date = datetime.now().strftime('%Y-%m-%d')
         
         self.logger.info("=" * 80)
-        self.logger.info("Saving data to Excel files and uploading to Google Drive (each coin = 1 sheet)...")
+        self.logger.info(f"Saving data for year {year} to Google Drive...")
         self.logger.info("=" * 80)
         
-        for year, dataframes in data_store.items():
-            try:
-                # Generate filename with timeframe and current date
-                filename = f"Binance_timeframe:{self.timeframe}_{year}_to_{current_date}.xlsx"
-                
-                # Remove old files for this year from Google Drive
-                self._cleanup_old_files(year, filename, current_date)
-                
-                # Create and upload the Excel file
-                self._create_and_upload_excel(year, dataframes, filename)
-                
-            except Exception as e:
-                self.logger.error(f"Error saving data for year {year}: {e}")
-                import traceback
-                self.logger.error(traceback.format_exc())
-        
-        self.logger.info("=" * 80)
-        self.logger.info("Data fetching and uploading to Google Drive completed successfully!")
-        self.logger.info("=" * 80)
+        try:
+            # Generate filename with timeframe and current date
+            filename = f"Binance_timeframe:{self.timeframe}_{year}_to_{current_date}.xlsx"
+            
+            # Remove old files for this year from Google Drive
+            self._cleanup_old_files(year, filename, current_date)
+            
+            # Create and upload the Excel file
+            self._create_and_upload_excel(year, dataframes, filename)
+            
+            self.logger.info("=" * 80)
+            self.logger.info(f"Year {year} data uploaded to Google Drive successfully!")
+            self.logger.info("=" * 80)
+            
+        except Exception as e:
+            self.logger.error(f"Error saving data for year {year}: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
     
     def _cleanup_old_files(self, year: int, current_filename: str, current_date: str):
         """

@@ -381,95 +381,88 @@ class BinanceFetcherGUI(ctk.CTk):
                 logger=logger
             )
             
-            # Fetch markets
+            # Get year range
             self.progress_reporter.report(
                 ExecutionStage.FETCHING_MARKETS,
                 0.0,
-                "Fetching available markets from Binance..."
+                "Detecting year range for available data..."
             )
             
-            symbols = data_fetcher.get_markets()
+            min_year, max_year = data_fetcher.get_year_range()
             
-            if not symbols:
-                self.progress_reporter.report_error("No symbols found matching criteria")
+            if min_year is None or max_year is None:
+                self.progress_reporter.report_error("Could not determine year range")
                 return
             
             self.progress_reporter.report(
                 ExecutionStage.FETCHING_MARKETS,
                 1.0,
-                f"Found {len(symbols)} symbols matching criteria"
+                f"Year range detected: {min_year} to {max_year}"
             )
             
-            # Process symbols with progress reporting
-            self.progress_reporter.report(
-                ExecutionStage.PROCESSING_SYMBOLS,
-                0.0,
-                f"Processing {len(symbols)} symbols...",
-                total_items=len(symbols),
-                completed_items=0
-            )
+            # Process year by year: fetch -> save -> next year
+            total_years = max_year - min_year + 1
+            total_coins_processed = 0
             
-            # Fetch data for all symbols
-            from collections import defaultdict
-            data_store = defaultdict(list)
-            
-            for i, symbol in enumerate(symbols):
+            for year_idx, year in enumerate(range(min_year, max_year + 1)):
                 if not self._is_running:
                     self.progress_reporter.report_error("Process cancelled by user")
                     return
                 
-                progress = (i + 1) / len(symbols)
+                # Update overall progress based on years
+                overall_progress = year_idx / total_years
+                
+                # === FETCH DATA FOR THIS YEAR ===
                 self.progress_reporter.report(
                     ExecutionStage.PROCESSING_SYMBOLS,
-                    progress,
-                    f"Processing {symbol}...",
-                    current_item=symbol,
-                    total_items=len(symbols),
-                    completed_items=i + 1
+                    overall_progress,
+                    f"[Year {year}] Fetching data ({year_idx + 1}/{total_years})...",
+                    total_items=total_years,
+                    completed_items=year_idx
                 )
                 
-                # Detect listing date
-                listing_timestamp = data_fetcher._detect_listing_date(symbol)
-                if not listing_timestamp:
-                    continue
+                # Fetch data for this specific year
+                year_data = data_fetcher.fetch_data_for_year(year)
                 
-                # Get listing year
-                listing_date = datetime.fromtimestamp(listing_timestamp / 1000)
-                listing_year = listing_date.year
-                
-                # Fetch candles (fetch all available historical data)
-                df = data_fetcher.fetch_candles(symbol, listing_timestamp)
-                if df is not None and not df.empty:
-                    data_store[listing_year].append(df)
+                # === IMMEDIATELY SAVE THIS YEAR'S DATA ===
+                if year_data and year in year_data and year_data[year]:
+                    coins_in_year = len(year_data[year])
+                    total_coins_processed += coins_in_year
+                    
+                    self.progress_reporter.report(
+                        ExecutionStage.UPLOADING,
+                        (year_idx + 0.5) / total_years,
+                        f"[Year {year}] Saving {coins_in_year} coins to Google Drive...",
+                        total_items=total_years,
+                        completed_items=year_idx
+                    )
+                    
+                    # Save immediately after fetching this year's data
+                    data_saver.save_single_year(year, year_data[year])
+                    
+                    self.progress_reporter.report(
+                        ExecutionStage.UPLOADING,
+                        (year_idx + 1) / total_years,
+                        f"[Year {year}] ✓ Saved {coins_in_year} coins to Google Drive",
+                        total_items=total_years,
+                        completed_items=year_idx + 1
+                    )
+                else:
+                    self.progress_reporter.report(
+                        ExecutionStage.PROCESSING_SYMBOLS,
+                        (year_idx + 1) / total_years,
+                        f"[Year {year}] No coins found for this year, moving to next...",
+                        total_items=total_years,
+                        completed_items=year_idx + 1
+                    )
             
-            if not data_store:
+            if total_coins_processed == 0:
                 self.progress_reporter.report_error("No data fetched for any symbol")
                 return
             
-            # Save data
-            self.progress_reporter.report(
-                ExecutionStage.SAVING_DATA,
-                0.0,
-                "Preparing data for upload..."
-            )
-            
-            self.progress_reporter.report(
-                ExecutionStage.UPLOADING,
-                0.0,
-                "Uploading to Google Drive..."
-            )
-            
-            data_saver.save_by_year(dict(data_store))
-            
-            self.progress_reporter.report(
-                ExecutionStage.UPLOADING,
-                1.0,
-                "Upload completed successfully"
-            )
-            
             # Report completion
             self.progress_reporter.report_completion(
-                f"Process completed! Fetched data for {sum(len(dfs) for dfs in data_store.values())} coins"
+                f"Process completed! Fetched and saved data for {total_coins_processed} coins across {total_years} years"
             )
             
         except Exception as e:
