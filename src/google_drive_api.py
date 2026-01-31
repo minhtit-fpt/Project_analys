@@ -267,6 +267,16 @@ class GoogleDriveAPI:
             File ID if successful, None otherwise
         """
         try:
+            self.logger.info(f"Preparing to upload: {filename}")
+            
+            # Verify local file exists
+            if not os.path.exists(file_path):
+                self.logger.error(f"Local file does not exist: {file_path}")
+                return None
+            
+            file_size = os.path.getsize(file_path)
+            self.logger.info(f"File size: {file_size / 1024 / 1024:.2f} MB")
+            
             file_metadata = {
                 'name': filename,
                 'parents': [self.folder_id]
@@ -281,27 +291,32 @@ class GoogleDriveAPI:
                 resumable=True
             )
             
-            # Check if file with same name already exists
-            existing_files = self.list_files(filename)
+            # Check if file with EXACT same name already exists
+            self.logger.info(f"Checking for existing files with name: {filename}")
+            existing_files = self.list_files()
+            
             for existing_file in existing_files:
-                if existing_file['name'] == filename:
+                if existing_file['name'] == filename:  # Exact match
+                    self.logger.info(f"Found existing file with exact name, updating: {filename}")
                     # Update existing file
                     updated_file = self.drive_service.files().update(
                         fileId=existing_file['id'],
                         media_body=media
                     ).execute()
-                    self.logger.info(f"Updated existing file: {filename}")
+                    self.logger.info(f"✓ Updated existing file: {filename} (ID: {updated_file.get('id')})")
                     return updated_file.get('id')
             
             # Create new file
+            self.logger.info(f"Creating new file: {filename}")
             file = self.drive_service.files().create(
                 body=file_metadata,
                 media_body=media,
                 fields='id'
             ).execute()
             
-            self.logger.info(f"Uploaded new file: {filename}")
-            return file.get('id')
+            file_id = file.get('id')
+            self.logger.info(f"✓ Uploaded new file: {filename} (ID: {file_id})")
+            return file_id
             
         except Exception as e:
             self.logger.error(f"Error uploading file to Google Drive: {e}")
