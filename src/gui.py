@@ -381,26 +381,32 @@ class BinanceFetcherGUI(ctk.CTk):
                 logger=logger
             )
             
-            # Get year range
+            # === STEP 1: SCAN ALL SYMBOLS ONCE AND GROUP BY YEAR ===
             self.progress_reporter.report(
                 ExecutionStage.FETCHING_MARKETS,
                 0.0,
-                "Detecting year range for available data..."
+                "Scanning all symbols and grouping by listing year (one-time scan)..."
             )
             
-            min_year, max_year = data_fetcher.get_year_range()
+            # This scans all symbols ONCE and groups them by listing year
+            symbols_by_year = data_fetcher.scan_and_group_symbols_by_year()
             
-            if min_year is None or max_year is None:
-                self.progress_reporter.report_error("Could not determine year range")
+            if not symbols_by_year:
+                self.progress_reporter.report_error("No symbols found or could not group by year")
                 return
+            
+            # Get year range from the grouped data
+            min_year = min(symbols_by_year.keys())
+            max_year = max(symbols_by_year.keys())
+            total_symbols = sum(len(syms) for syms in symbols_by_year.values())
             
             self.progress_reporter.report(
                 ExecutionStage.FETCHING_MARKETS,
                 1.0,
-                f"Year range detected: {min_year} to {max_year}"
+                f"Scan complete: {total_symbols} coins grouped into years {min_year}-{max_year}"
             )
             
-            # Process year by year: fetch -> save -> next year
+            # === STEP 2: PROCESS YEAR BY YEAR (NO RE-SCANNING) ===
             total_years = max_year - min_year + 1
             total_coins_processed = 0
             
@@ -409,24 +415,37 @@ class BinanceFetcherGUI(ctk.CTk):
                     self.progress_reporter.report_error("Process cancelled by user")
                     return
                 
+                # Get symbols for this specific year (already grouped, no re-scan needed)
+                year_symbols = symbols_by_year.get(year, [])
+                
+                if not year_symbols:
+                    self.progress_reporter.report(
+                        ExecutionStage.PROCESSING_SYMBOLS,
+                        (year_idx + 1) / total_years,
+                        f"[Year {year}] No coins listed in this year, moving to next...",
+                        total_items=total_years,
+                        completed_items=year_idx + 1
+                    )
+                    continue
+                
                 # Update overall progress based on years
                 overall_progress = year_idx / total_years
                 
-                # === FETCH DATA FOR THIS YEAR ===
+                # === FETCH DATA FOR THIS YEAR (using pre-scanned symbols) ===
                 self.progress_reporter.report(
                     ExecutionStage.PROCESSING_SYMBOLS,
                     overall_progress,
-                    f"[Year {year}] Fetching data ({year_idx + 1}/{total_years})...",
+                    f"[Year {year}] Fetching data for {len(year_symbols)} coins ({year_idx + 1}/{total_years})...",
                     total_items=total_years,
                     completed_items=year_idx
                 )
                 
-                # Fetch data for this specific year
-                year_data = data_fetcher.fetch_data_for_year(year)
+                # Fetch data using the pre-scanned symbol list (no re-detection needed)
+                year_data = data_fetcher.fetch_data_for_symbols(year_symbols)
                 
                 # === IMMEDIATELY SAVE THIS YEAR'S DATA ===
-                if year_data and year in year_data and year_data[year]:
-                    coins_in_year = len(year_data[year])
+                if year_data:
+                    coins_in_year = len(year_data)
                     total_coins_processed += coins_in_year
                     
                     self.progress_reporter.report(
@@ -438,7 +457,7 @@ class BinanceFetcherGUI(ctk.CTk):
                     )
                     
                     # Save immediately after fetching this year's data
-                    data_saver.save_single_year(year, year_data[year])
+                    data_saver.save_single_year(year, year_data)
                     
                     self.progress_reporter.report(
                         ExecutionStage.UPLOADING,
@@ -451,7 +470,7 @@ class BinanceFetcherGUI(ctk.CTk):
                     self.progress_reporter.report(
                         ExecutionStage.PROCESSING_SYMBOLS,
                         (year_idx + 1) / total_years,
-                        f"[Year {year}] No coins found for this year, moving to next...",
+                        f"[Year {year}] No data fetched for coins, moving to next...",
                         total_items=total_years,
                         completed_items=year_idx + 1
                     )
