@@ -23,9 +23,9 @@ import argparse
 from datetime import datetime
 from dotenv import load_dotenv
 
-from src.google_drive_api import GoogleDriveAPI
-from src.get_data import GetData
-from src.save_data import SaveData
+from src.LOGIC.google_drive_api import GoogleDriveAPI
+from src.LOGIC.get_data import GetData
+from src.LOGIC.save_data import SaveData
 
 # Load environment variables from .env file
 load_dotenv()
@@ -194,7 +194,7 @@ def run_cli():
 def run_gui():
     """Run the application in GUI mode."""
     try:
-        from src.gui import BinanceFetcherGUI
+        from src.GUI.gui import BinanceFetcherGUI
         
         app = BinanceFetcherGUI()
         app.protocol("WM_DELETE_WINDOW", app.on_closing)
