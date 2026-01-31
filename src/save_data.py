@@ -87,21 +87,57 @@ class SaveData:
             current_filename: The current filename (to avoid deleting)
             current_date: The current date string for comparison
         """
-        # Check and remove old files for this year from Google Drive
-        pattern = f"Binance_timeframe:{self.timeframe}_{year}_to_"
-        existing_files = self.google_drive.list_files(pattern)
+        self.logger.info(f"Checking for old files to clean up for year {year}...")
         
-        for old_file in existing_files:
-            if old_file['name'] != current_filename:
-                # Extract date from old filename
+        # Search for files with this year and timeframe pattern
+        # Pattern: Binance_timeframe:1d_2020_to_
+        pattern = f"Binance_timeframe:{self.timeframe}_{year}_to_"
+        
+        try:
+            existing_files = self.google_drive.list_files(pattern)
+            
+            if not existing_files:
+                self.logger.info(f"  No existing files found for year {year}")
+                return
+            
+            self.logger.info(f"  Found {len(existing_files)} existing file(s) for year {year}")
+            
+            for old_file in existing_files:
+                old_filename = old_file['name']
+                
+                # Skip if it's the same filename we're about to upload
+                if old_filename == current_filename:
+                    self.logger.info(f"  Skipping current file: {old_filename}")
+                    continue
+                
+                # Extract date from old filename for comparison
                 try:
-                    old_date = old_file['name'].split('_to_')[1].replace('.xlsx', '')
-                    # Compare dates
-                    if current_date > old_date:
-                        if self.google_drive.delete_file(old_file['id']):
-                            self.logger.info(f"  Removed old file from Google Drive: {old_file['name']}")
+                    # Format: Binance_timeframe:1d_2020_to_2026-01-30.xlsx
+                    if '_to_' in old_filename:
+                        old_date = old_filename.split('_to_')[1].replace('.xlsx', '')
+                        
+                        self.logger.info(f"  Comparing dates: old={old_date}, current={current_date}")
+                        
+                        # Delete if old date is less than current date
+                        if old_date < current_date:
+                            self.logger.info(f"  Deleting old file: {old_filename} (ID: {old_file['id']})")
+                            
+                            if self.google_drive.delete_file(old_file['id']):
+                                self.logger.info(f"  ✓ Successfully removed: {old_filename}")
+                            else:
+                                self.logger.error(f"  ✗ Failed to delete: {old_filename}")
+                        else:
+                            self.logger.info(f"  Keeping file: {old_filename} (not older)")
+                    else:
+                        self.logger.warning(f"  Cannot parse filename: {old_filename}")
+                        
                 except Exception as e:
-                    self.logger.warning(f"  Could not process old file {old_file['name']}: {e}")
+                    self.logger.error(f"  Error processing file {old_filename}: {e}")
+                    
+        except Exception as e:
+            self.logger.error(f"Error during cleanup: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
     
     def _create_and_upload_excel(self, year: int, dataframes: List[pd.DataFrame], filename: str):
         """
@@ -117,6 +153,9 @@ class SaveData:
             temp_path = tmp_file.name
         
         try:
+            self.logger.info(f"Creating Excel file for year {year}...")
+            self.logger.info(f"  Temporary file: {temp_path}")
+            
             # Create Excel writer using temporary file
             with pd.ExcelWriter(temp_path, engine='openpyxl', mode='w') as writer:
                 total_records = 0
@@ -144,20 +183,40 @@ class SaveData:
                     
                     self.logger.info(f"  ✓ {symbol}: {len(df_sorted)} records → sheet '{sheet_name}'")
             
+            self.logger.info(f"Excel file created with {len(coins_saved)} sheets, {total_records} total records")
+            
+            # Verify file was created
+            if not os.path.exists(temp_path):
+                self.logger.error(f"Excel file was not created at {temp_path}")
+                return
+            
+            file_size = os.path.getsize(temp_path)
+            self.logger.info(f"File size: {file_size / 1024 / 1024:.2f} MB")
+            
             # Upload the Excel file to Google Drive
+            self.logger.info(f"Uploading to Google Drive: {filename}...")
             file_id = self.google_drive.upload_file(temp_path, filename)
             
             if file_id:
-                self.logger.info(f"\n✓ Saved year {year} to Google Drive")
+                self.logger.info(f"\n✓ Successfully uploaded to Google Drive")
                 self.logger.info(f"  File: {filename}")
                 self.logger.info(f"  Google Drive File ID: {file_id}")
                 self.logger.info(f"  Total sheets (coins): {len(coins_saved)}")
                 self.logger.info(f"  Total records: {total_records}")
                 self.logger.info(f"  Coins: {', '.join(coins_saved[:5])}{'...' if len(coins_saved) > 5 else ''}\n")
             else:
-                self.logger.error(f"Failed to upload {filename} to Google Drive")
+                self.logger.error(f"✗ Failed to upload {filename} to Google Drive")
+                self.logger.error("  Check Google Drive credentials and permissions")
                 
+        except Exception as e:
+            self.logger.error(f"Error creating or uploading Excel file: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
         finally:
             # Clean up temporary file
             if os.path.exists(temp_path):
-                os.remove(temp_path)
+                try:
+                    os.remove(temp_path)
+                    self.logger.info(f"Cleaned up temporary file: {temp_path}")
+                except Exception as e:
+                    self.logger.warning(f"Could not delete temporary file {temp_path}: {e}")
