@@ -9,7 +9,7 @@ from typing import Optional
 import threading
 from tkinter import messagebox
 
-from src.progress_reporter import ProgressReporter, ProgressInfo, ExecutionStage
+from src.GUI.progress_reporter import ProgressReporter, ProgressInfo, ExecutionStage
 
 
 class BinanceFetcherGUI(ctk.CTk):
@@ -339,9 +339,9 @@ class BinanceFetcherGUI(ctk.CTk):
         """Run the data fetching process in a background thread."""
         try:
             # Import here to avoid circular imports
-            from src.google_drive_api import GoogleDriveAPI
-            from src.get_data import GetData
-            from src.save_data import SaveData
+            from src.LOGIC.google_drive_api import GoogleDriveAPI
+            from src.LOGIC.get_data import GetData
+            from src.LOGIC.save_data import SaveData
             import logging
             
             # Setup a simple logger
