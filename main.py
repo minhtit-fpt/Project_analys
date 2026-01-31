@@ -111,7 +111,7 @@ class Main:
         Execute the main data pipeline.
         
         Steps:
-            1. Detect year range with available data
+            1. Scan all symbols once and group by year
             2. For each year: fetch data → immediately save to Google Drive
         """
         self.logger.info("=" * 80)
@@ -119,18 +119,23 @@ class Main:
         self.logger.info("=" * 80)
         
         try:
-            # Step 1: Get the range of years to process
-            self.logger.info("Step 1: Detecting year range...")
-            min_year, max_year = self.data_fetcher.get_year_range()
+            # Step 1: Scan all symbols once and group by year
+            self.logger.info("Step 1: Scanning symbols and grouping by year...")
+            symbols_by_year = self.data_fetcher.scan_and_group_symbols_by_year()
             
-            if min_year is None or max_year is None:
-                self.logger.error("Could not determine year range. Exiting...")
+            if not symbols_by_year:
+                self.logger.error("No symbols found or could not group by year. Exiting...")
                 return
+            
+            min_year = min(symbols_by_year.keys())
+            max_year = max(symbols_by_year.keys())
             
             self.logger.info(f"Will process years from {min_year} to {max_year}")
             
             # Step 2: Process each year sequentially (fetch → save → next year)
             total_years = max_year - min_year + 1
+            total_coins_processed = 0
+            
             self.logger.info(f"\nProcessing {total_years} year(s) sequentially...\n")
             
             for year in range(min_year, max_year + 1):
@@ -138,20 +143,30 @@ class Main:
                 self.logger.info(f"Processing Year {year} ({year - min_year + 1}/{total_years})")
                 self.logger.info("#" * 80)
                 
-                # Fetch data for this specific year
-                year_data = self.data_fetcher.fetch_data_for_year(year)
+                # Get symbols for this year (already grouped, no re-scan needed)
+                year_symbols = symbols_by_year.get(year, [])
+                
+                if not year_symbols:
+                    self.logger.info(f"No coins listed in year {year}. Moving to next year...")
+                    continue
+                
+                # Fetch data for this year's symbols
+                self.logger.info(f"Fetching data for {len(year_symbols)} coins...")
+                year_data = self.data_fetcher.fetch_data_for_symbols(year_symbols)
                 
                 # Immediately save to Google Drive if data was fetched
-                if year_data and year in year_data and year_data[year]:
+                if year_data:
+                    total_coins_processed += len(year_data)
                     self.logger.info(f"Saving data for year {year} to Google Drive...")
-                    self.data_saver.save_single_year(year, year_data[year])
+                    self.data_saver.save_single_year(year, year_data)
                 else:
-                    self.logger.info(f"No data to save for year {year}. Moving to next year...")
+                    self.logger.info(f"No data fetched for year {year}. Moving to next year...")
                 
                 self.logger.info(f"\nCompleted processing year {year}\n")
             
             self.logger.info("=" * 80)
             self.logger.info("Pipeline completed successfully!")
+            self.logger.info(f"Processed {total_coins_processed} coins across {len(symbols_by_year)} years.")
             self.logger.info("All years have been processed and uploaded to Google Drive.")
             self.logger.info("=" * 80)
             
