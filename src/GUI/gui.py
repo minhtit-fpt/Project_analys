@@ -308,7 +308,7 @@ class BinanceFetcherGUI(ctk.CTk):
 
         title = ctk.CTkLabel(
             header_frame,
-            text="� Create Chart",
+            text="📈 Create Chart",
             font=ctk.CTkFont(size=22, weight="bold")
         )
         title.pack(side="left", padx=(15, 0))
