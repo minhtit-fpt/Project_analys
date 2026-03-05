@@ -221,7 +221,7 @@ class SaveData:
                 self.logger.info(f"\n✓ Successfully uploaded to Google Cloud Storage")
                 self.logger.info(f"  File: {filename}")
                 self.logger.info(f"  GCS Blob: {file_id}")
-                self.logger.info(f"  Total sheets (coins): {len(coins_saved)}")
+                self.logger.info(f"  Total coins: {len(coins_saved)}")
                 self.logger.info(f"  Total records: {total_records}")
                 self.logger.info(f"  Coins: {', '.join(coins_saved[:5])}{'...' if len(coins_saved) > 5 else ''}\n")
             else:
