@@ -1049,12 +1049,12 @@ class BinanceFetcherGUI(ctk.CTk):
         """
         Run the chart data generation process in a background thread.
 
-        Retrieves pre-existing parquet files from Google Drive,
+        Retrieves pre-existing parquet files from Google Cloud Storage,
         filters by date range and coin scope, and prepares data
         for chart display.
         """
         try:
-            from src.LOGIC.google_drive_api import GoogleDriveAPI
+            from src.LOGIC.google_cloud_storage_api import GoogleCloudStorageAPI
             from src.LOGIC.chart_generator import ChartGenerator
             import logging
 
@@ -1066,24 +1066,24 @@ class BinanceFetcherGUI(ctk.CTk):
                 "Initializing chart generation..."
             )
 
-            # --- Authenticate with Google Drive ---
+            # --- Authenticate with Google Cloud Storage ---
             self.progress_reporter.report(
                 ExecutionStage.AUTHENTICATING, 0.0,
-                "Authenticating with Google Drive..."
+                "Authenticating with Google Cloud Storage..."
             )
-            google_drive = GoogleDriveAPI(logger=logger)
+            storage_api = GoogleCloudStorageAPI(logger=logger)
             self.progress_reporter.report(
                 ExecutionStage.AUTHENTICATING, 1.0,
-                "Google Drive authentication successful"
+                "Google Cloud Storage authentication successful"
             )
 
             if not self._is_running:
                 self.progress_reporter.report_error("Process cancelled by user")
                 return
 
-            # --- Generate chart data from Drive ---
+            # --- Generate chart data from GCS ---
             generator = ChartGenerator(
-                google_drive_api=google_drive,
+                storage_api=storage_api,
                 progress_reporter=self.progress_reporter,
                 logger=logger
             )
@@ -1207,7 +1207,7 @@ class BinanceFetcherGUI(ctk.CTk):
         """Run the data fetching process in a background thread."""
         try:
             # Import here to avoid circular imports
-            from src.LOGIC.google_drive_api import GoogleDriveAPI
+            from src.LOGIC.google_cloud_storage_api import GoogleCloudStorageAPI
             from src.LOGIC.get_data import GetData
             from src.LOGIC.save_data import SaveData
             import logging
@@ -1222,17 +1222,17 @@ class BinanceFetcherGUI(ctk.CTk):
                 "Initializing components..."
             )
             
-            # Initialize Google Drive API
+            # Initialize Google Cloud Storage API
             self.progress_reporter.report(
                 ExecutionStage.AUTHENTICATING,
                 0.0,
-                "Authenticating with Google Drive..."
+                "Authenticating with Google Cloud Storage..."
             )
-            google_drive = GoogleDriveAPI(logger=logger)
+            storage_api = GoogleCloudStorageAPI(logger=logger)
             self.progress_reporter.report(
                 ExecutionStage.AUTHENTICATING,
                 1.0,
-                "Google Drive authentication successful"
+                "Google Cloud Storage authentication successful"
             )
             
             # Initialize data fetcher
@@ -1244,7 +1244,7 @@ class BinanceFetcherGUI(ctk.CTk):
             
             # Initialize data saver with timeframe for filename
             data_saver = SaveData(
-                google_drive_api=google_drive,
+                storage_api=storage_api,
                 timeframe=timeframe,
                 logger=logger
             )
@@ -1319,7 +1319,7 @@ class BinanceFetcherGUI(ctk.CTk):
                     self.progress_reporter.report(
                         ExecutionStage.UPLOADING,
                         (year_idx + 0.5) / total_years,
-                        f"[Year {year}] Saving {coins_in_year} coins to Google Drive...",
+                        f"[Year {year}] Saving {coins_in_year} coins to Google Cloud Storage...",
                         total_items=total_years,
                         completed_items=year_idx
                     )
@@ -1330,7 +1330,7 @@ class BinanceFetcherGUI(ctk.CTk):
                     self.progress_reporter.report(
                         ExecutionStage.UPLOADING,
                         (year_idx + 1) / total_years,
-                        f"[Year {year}] ✓ Saved {coins_in_year} coins to Google Drive",
+                        f"[Year {year}] ✓ Saved {coins_in_year} coins to Google Cloud Storage",
                         total_items=total_years,
                         completed_items=year_idx + 1
                     )

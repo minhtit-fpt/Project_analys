@@ -13,7 +13,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from src.LOGIC.google_drive_api import GoogleDriveAPI
+from src.LOGIC.google_cloud_storage_api import GoogleCloudStorageAPI
 
 
 class SaveData:
@@ -25,19 +25,19 @@ class SaveData:
     - Handle file naming conventions
     - Manage year-based folder/file structure
     - Handle overwriting and deleting old files
-    - Delegate upload operations to GoogleDriveAPI
+    - Delegate upload operations to GoogleCloudStorageAPI
     """
     
-    def __init__(self, google_drive_api: GoogleDriveAPI, timeframe: str = '1d', logger: logging.Logger = None):
+    def __init__(self, storage_api: GoogleCloudStorageAPI, timeframe: str = '1d', logger: logging.Logger = None):
         """
         Initialize the data saver.
         
         Args:
-            google_drive_api: GoogleDriveAPI instance for file uploads
+            storage_api: GoogleCloudStorageAPI instance for file uploads
             timeframe: Candle timeframe for filename (default: '1d')
             logger: Optional logger instance. If not provided, creates a new one.
         """
-        self.google_drive = google_drive_api
+        self.storage = storage_api
         self.timeframe = timeframe
         self.logger = logger or logging.getLogger(__name__)
     
@@ -58,7 +58,7 @@ class SaveData:
         current_date = datetime.now().strftime('%Y-%m-%d')
         
         self.logger.info("=" * 80)
-        self.logger.info(f"Saving data for year {year} to Google Drive...")
+        self.logger.info(f"Saving data for year {year} to Google Cloud Storage...")
         self.logger.info("=" * 80)
         
         try:
@@ -72,7 +72,7 @@ class SaveData:
             self._create_and_upload_parquet(year, dataframes, filename)
             
             self.logger.info("=" * 80)
-            self.logger.info(f"Year {year} data uploaded to Google Drive successfully!")
+            self.logger.info(f"Year {year} data uploaded to Google Cloud Storage successfully!")
             self.logger.info("=" * 80)
             
         except Exception as e:
@@ -82,7 +82,7 @@ class SaveData:
     
     def _cleanup_old_files(self, year: int, current_filename: str, current_date: str):
         """
-        Remove old files for a specific year from Google Drive.
+        Remove old files for a specific year from Google Cloud Storage.
         
         Args:
             year: The year to clean up files for
@@ -96,7 +96,7 @@ class SaveData:
         pattern = f"Binance_timeframe:{self.timeframe}_{year}_to_"
         
         try:
-            existing_files = self.google_drive.list_files(pattern)
+            existing_files = self.storage.list_files(pattern)
             
             if not existing_files:
                 self.logger.info(f"  No existing files found for year {year}")
@@ -124,7 +124,7 @@ class SaveData:
                         if old_date < current_date:
                             self.logger.info(f"  Deleting old file: {old_filename} (ID: {old_file['id']})")
                             
-                            if self.google_drive.delete_file(old_file['id']):
+                            if self.storage.delete_file(old_file['id']):
                                 self.logger.info(f"  ✓ Successfully removed: {old_filename}")
                             else:
                                 self.logger.error(f"  ✗ Failed to delete: {old_filename}")
@@ -143,7 +143,7 @@ class SaveData:
     
     def _create_and_upload_parquet(self, year: int, dataframes: List[pd.DataFrame], filename: str):
         """
-        Create a Parquet file from dataframes and upload to Google Drive.
+        Create a Parquet file from dataframes and upload to Google Cloud Storage.
         
         Args:
             year: The year for the data
@@ -213,20 +213,20 @@ class SaveData:
             file_size = os.path.getsize(temp_path)
             self.logger.info(f"File size: {file_size / 1024 / 1024:.2f} MB")
             
-            # Upload the Parquet file to Google Drive
-            self.logger.info(f"Uploading to Google Drive: {filename}...")
-            file_id = self.google_drive.upload_file(temp_path, filename)
+            # Upload the Parquet file to Google Cloud Storage
+            self.logger.info(f"Uploading to GCS: {filename}...")
+            file_id = self.storage.upload_file(temp_path, filename)
             
             if file_id:
-                self.logger.info(f"\n✓ Successfully uploaded to Google Drive")
+                self.logger.info(f"\n✓ Successfully uploaded to Google Cloud Storage")
                 self.logger.info(f"  File: {filename}")
-                self.logger.info(f"  Google Drive File ID: {file_id}")
+                self.logger.info(f"  GCS Blob: {file_id}")
                 self.logger.info(f"  Total sheets (coins): {len(coins_saved)}")
                 self.logger.info(f"  Total records: {total_records}")
                 self.logger.info(f"  Coins: {', '.join(coins_saved[:5])}{'...' if len(coins_saved) > 5 else ''}\n")
             else:
-                self.logger.error(f"✗ Failed to upload {filename} to Google Drive")
-                self.logger.error("  Check Google Drive credentials and permissions")
+                self.logger.error(f"✗ Failed to upload {filename} to Google Cloud Storage")
+                self.logger.error("  Check GCS credentials and bucket permissions")
                 
         except Exception as e:
             self.logger.error(f"Error creating or uploading Parquet file: {e}")

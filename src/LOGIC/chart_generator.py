@@ -12,7 +12,7 @@ from typing import List, Optional
 import pandas as pd
 from dateutil.relativedelta import relativedelta
 
-from src.LOGIC.google_drive_api import GoogleDriveAPI
+from src.LOGIC.google_cloud_storage_api import GoogleCloudStorageAPI
 from src.GUI.progress_reporter import ProgressReporter, ExecutionStage
 
 
@@ -27,18 +27,18 @@ class ChartGenerator:
     - Return the filtered dataset for chart rendering
     """
 
-    def __init__(self, google_drive_api: GoogleDriveAPI,
+    def __init__(self, storage_api: GoogleCloudStorageAPI,
                  progress_reporter: Optional[ProgressReporter] = None,
                  logger: logging.Logger = None):
         """
         Initialize the chart generator.
 
         Args:
-            google_drive_api: Authenticated GoogleDriveAPI instance
+            storage_api: Authenticated GoogleCloudStorageAPI instance
             progress_reporter: Optional progress reporter for UI feedback
             logger: Optional logger instance
         """
-        self.google_drive = google_drive_api
+        self.storage = storage_api
         self.progress_reporter = progress_reporter
         self.logger = logger or logging.getLogger(__name__)
 
@@ -86,14 +86,14 @@ class ChartGenerator:
 
         # 3. Retrieve parquet files from Google Drive
         self._report(ExecutionStage.FETCHING_MARKETS, 0.0,
-                     f"Searching Google Drive for {timeframe} data files "
+                     f"Searching GCS for {timeframe} data files "
                      f"({len(years_needed)} year(s))...")
 
         combined_df = self._retrieve_and_load(timeframe, years_needed,
                                               is_running_check)
 
         if combined_df is None or combined_df.empty:
-            self.logger.warning("No data retrieved from Google Drive.")
+            self.logger.warning("No data retrieved from GCS.")
             return None
 
         if is_running_check and not is_running_check():
@@ -164,7 +164,7 @@ class ChartGenerator:
     def _retrieve_and_load(self, timeframe: str, years: List[int],
                            is_running_check=None) -> Optional[pd.DataFrame]:
         """
-        Download relevant parquet files from Google Drive and load them
+        Download relevant parquet files from GCS and load them
         into a single combined DataFrame.
 
         File naming convention (not modified):
@@ -177,11 +177,11 @@ class ChartGenerator:
             if is_running_check and not is_running_check():
                 return None
 
-            # Build the Drive search pattern matching the naming convention
+            # Build the GCS search pattern matching the naming convention
             pattern = f"Binance_timeframe:{timeframe}_{year}_to_"
-            self.logger.info(f"Searching Drive for pattern: {pattern}")
+            self.logger.info(f"Searching GCS for pattern: {pattern}")
 
-            files = self.google_drive.list_files(pattern)
+            files = self.storage.list_files(pattern)
 
             if not files:
                 self.logger.info(f"  No file found for year {year} "
@@ -204,7 +204,7 @@ class ChartGenerator:
                 f"Downloading {target_file['name']}..."
             )
 
-            local_path = self.google_drive.download_file(target_file['id'])
+            local_path = self.storage.download_file(target_file['id'])
 
             if local_path is None:
                 self.logger.error(f"  Failed to download {target_file['name']}")

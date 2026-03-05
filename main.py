@@ -8,7 +8,7 @@ Architecture:
     - Main: Entry point and orchestrator
     - GetData: Data retrieval from Binance
     - SaveData: Data saving and file management
-    - GoogleDriveAPI: Google Drive API interactions
+    - GoogleCloudStorageAPI: Google Cloud Storage interactions
     - GUI: Optional graphical interface using CustomTkinter
 
 Usage:
@@ -23,7 +23,7 @@ import argparse
 from datetime import datetime
 from dotenv import load_dotenv
 
-from src.LOGIC.google_drive_api import GoogleDriveAPI
+from src.LOGIC.google_cloud_storage_api import GoogleCloudStorageAPI
 from src.LOGIC.get_data import GetData
 from src.LOGIC.save_data import SaveData
 
@@ -39,9 +39,9 @@ class Main:
     all other components without containing business logic itself.
     
     Components:
-        - GoogleDriveAPI: Handles authentication and file operations
+        - GoogleCloudStorageAPI: Handles authentication and file operations
         - GetData: Handles data retrieval from Binance
-        - SaveData: Handles data saving to Google Drive
+        - SaveData: Handles data saving to Google Cloud Storage
     """
     
     def __init__(self, price_threshold: float = 10.0, timeframe: str = '1d'):
@@ -84,9 +84,9 @@ class Main:
         """Initialize all child components."""
         self.logger.info("Initializing components...")
         
-        # Initialize Google Drive API handler
-        self.logger.info("  → Initializing Google Drive API...")
-        self.google_drive_api = GoogleDriveAPI(logger=self.logger)
+        # Initialize Google Cloud Storage API handler
+        self.logger.info("  → Initializing Google Cloud Storage API...")
+        self.storage_api = GoogleCloudStorageAPI(logger=self.logger)
         
         # Initialize data fetcher
         self.logger.info("  → Initializing Data Fetcher...")
@@ -99,7 +99,7 @@ class Main:
         # Initialize data saver
         self.logger.info("  → Initializing Data Saver...")
         self.data_saver = SaveData(
-            google_drive_api=self.google_drive_api,
+            storage_api=self.storage_api,
             timeframe=self.timeframe,
             logger=self.logger
         )
@@ -157,7 +157,7 @@ class Main:
                 # Immediately save to Google Drive if data was fetched
                 if year_data:
                     total_coins_processed += len(year_data)
-                    self.logger.info(f"Saving data for year {year} to Google Drive...")
+                    self.logger.info(f"Saving data for year {year} to Google Cloud Storage...")
                     self.data_saver.save_single_year(year, year_data)
                 else:
                     self.logger.info(f"No data fetched for year {year}. Moving to next year...")
@@ -167,7 +167,7 @@ class Main:
             self.logger.info("=" * 80)
             self.logger.info("Pipeline completed successfully!")
             self.logger.info(f"Processed {total_coins_processed} coins across {len(symbols_by_year)} years.")
-            self.logger.info("All years have been processed and uploaded to Google Drive.")
+            self.logger.info("All years have been processed and uploaded to Google Cloud Storage.")
             self.logger.info("=" * 80)
             
         except Exception as e:
