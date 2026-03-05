@@ -110,20 +110,32 @@ class GoogleCloudStorageAPI:
     # Public API – same signatures as the former GoogleDriveAPI
     # ------------------------------------------------------------------
 
-    def list_files(self, name_pattern: str = None) -> List[Dict]:
+    def list_files(self, name_pattern: str = None, prefix: Optional[str] = None) -> List[Dict]:
         """
         List blobs (files) in the configured GCS bucket/prefix.
 
         Args:
             name_pattern: Optional substring to filter blob names.
+            prefix: Optional additional prefix under the configured folder_prefix
+                    to narrow the server-side listing (improves performance
+                    when only a subset of files is needed).
 
         Returns:
             List of dicts with 'id' (blob name) and 'name' (file name only)
             matching the shape returned by the old GoogleDriveAPI.
         """
         try:
+            # Build an effective prefix for server-side filtering. This preserves
+            # existing behavior when 'prefix' is not provided while allowing
+            # callers to narrow the listing if desired.
+            effective_prefix = self.folder_prefix
+            if prefix:
+                # Avoid introducing duplicate slashes if caller passes a leading "/"
+                normalized_prefix = prefix.lstrip("/")
+                effective_prefix = f"{self.folder_prefix}{normalized_prefix}"
+
             blobs = self.client.list_blobs(
-                self.bucket, prefix=self.folder_prefix
+                self.bucket, prefix=effective_prefix
             )
 
             results: List[Dict] = []
