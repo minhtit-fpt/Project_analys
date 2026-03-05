@@ -61,8 +61,9 @@ class BinanceFetcherGUI(ctk.CTk):
         self._create_chart_config_view()
         self._create_results_view()
         
-        # Center window
-        self._center_window()
+        # Center window only if not maximized
+        if self.state() != "zoomed":
+            self._center_window()
     
     def _center_window(self):
         """Center the window on screen."""
