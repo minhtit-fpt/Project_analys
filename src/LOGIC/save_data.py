@@ -7,7 +7,7 @@ import os
 import logging
 import tempfile
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import List
 
 import pandas as pd
 import pyarrow as pa
