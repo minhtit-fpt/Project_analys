@@ -194,8 +194,9 @@ class GetData:
             # Add symbol column
             df['symbol'] = symbol
             
-            # Convert timestamp to datetime
+            # Convert timestamp to datetime and drop redundant timestamp column
             df['date'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.drop(columns=['timestamp'], inplace=True)
             
             # Calculate Moving Averages
             df['MA_7'] = df['close'].rolling(window=7, min_periods=1).mean()
@@ -205,7 +206,7 @@ class GetData:
             df['MA_200'] = df['close'].rolling(window=200, min_periods=1).mean()
             
             # Reorder columns
-            df = df[['symbol', 'date', 'timestamp', 'open', 'high', 'low', 'close', 
+            df = df[['symbol', 'date', 'open', 'high', 'low', 'close', 
                     'volume', 'MA_7', 'MA_25', 'MA_50', 'MA_99', 'MA_200']]
             
             return df
