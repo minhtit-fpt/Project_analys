@@ -43,9 +43,9 @@ class SaveData:
     
     def save_single_year(self, year: int, dataframes: List[pd.DataFrame]):
         """
-        Save data for a single year to Parquet file and upload to Google Drive immediately.
+        Save data for a single year to a Parquet file and upload to Google Cloud Storage immediately.
         All coins are stored in a single Parquet file with a 'symbol' column.
-        Old files with outdated dates are removed from Google Drive.
+        Old files with outdated dates are removed from Google Cloud Storage.
         
         Args:
             year: The year to save data for
