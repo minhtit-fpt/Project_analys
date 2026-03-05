@@ -4,14 +4,16 @@ Responsible for all Google Drive interactions using OAuth 2.0 authentication.
 """
 
 import os
+import io
 import logging
+import tempfile
 from typing import Dict, List, Optional
 
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 
 
 class GoogleDriveAPI:
@@ -320,6 +322,40 @@ class GoogleDriveAPI:
             
         except Exception as e:
             self.logger.error(f"Error uploading file to Google Drive: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+            return None
+
+    def download_file(self, file_id: str) -> Optional[str]:
+        """
+        Download a file from Google Drive to a temporary local path.
+
+        Args:
+            file_id: The ID of the file to download
+
+        Returns:
+            Local file path if successful, None otherwise
+        """
+        try:
+            request = self.drive_service.files().get_media(fileId=file_id)
+
+            # Create a temp file
+            tmp_fd, tmp_path = tempfile.mkstemp(suffix='.parquet')
+            os.close(tmp_fd)
+
+            with io.FileIO(tmp_path, 'wb') as fh:
+                downloader = MediaIoBaseDownload(fh, request)
+                done = False
+                while not done:
+                    status, done = downloader.next_chunk()
+                    if status:
+                        self.logger.info(f"  Download progress: {int(status.progress() * 100)}%")
+
+            self.logger.info(f"  Downloaded file to: {tmp_path}")
+            return tmp_path
+
+        except Exception as e:
+            self.logger.error(f"Error downloading file {file_id}: {e}")
             import traceback
             self.logger.error(traceback.format_exc())
             return None
