@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Binance Chart — TradingView</title>
+    <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            background: #131722;
+            color: #d1d4dc;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            overflow: hidden;
+        }
+
+        /* ── Toolbar ────────────────────────────────────── */
+        #toolbar {
+            height: 48px;
+            background: #1e222d;
+            display: flex;
+            align-items: center;
+            padding: 0 16px;
+            border-bottom: 1px solid #2a2e39;
+            gap: 16px;
+            user-select: none;
+        }
+        #toolbar label {
+            font-size: 13px;
+            color: #787b86;
+        }
+        #toolbar select {
+            background: #2a2e39;
+            color: #d1d4dc;
+            border: 1px solid #363a45;
+            border-radius: 4px;
+            padding: 5px 10px;
+            font-size: 13px;
+            cursor: pointer;
+            outline: none;
+        }
+        #toolbar select:hover { border-color: #4c525e; }
+        #toolbar select:focus { border-color: #2962ff; }
+
+        #info-bar {
+            font-size: 12px;
+            color: #787b86;
+            margin-left: auto;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .status-dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+        }
+        .status-dot.connected  { background: #089981; }
+        .status-dot.loading    { background: #f7931a; animation: pulse 1s infinite; }
+        .status-dot.error      { background: #f23645; }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50%      { opacity: 0.4; }
+        }
+
+        /* ── Chart ──────────────────────────────────────── */
+        #chart-container {
+            width: 100%;
+            height: calc(100vh - 48px);
+        }
+
+        /* ── Tooltip (crosshair legend) ─────────────────── */
+        #legend {
+            position: absolute;
+            top: 56px;
+            left: 16px;
+            z-index: 10;
+            font-size: 12px;
+            color: #d1d4dc;
+            pointer-events: none;
+            line-height: 1.6;
+        }
+        #legend .value { font-weight: 600; }
+        #legend .up    { color: #089981; }
+        #legend .down  { color: #f23645; }
+    </style>
+</head>
+<body>
+    <div id="toolbar">
+        <label for="coin-select">Symbol:</label>
+        <select id="coin-select"></select>
+
+        <div id="info-bar">
+            <span class="status-dot connected"></span>
+            <span id="info-text">Ready</span>
+        </div>
+    </div>
+
+    <div id="chart-container"></div>
+    <div id="legend"></div>
+
+    <script>
+    /* ================================================================
+       Global State
+       ================================================================ */
+    let chart          = null;
+    let candleSeries   = null;
+    let volumeSeries   = null;
+    let chartData      = {};        // { symbol: [ {time,open,high,low,close,volume}, … ] }
+    let currentSymbol  = '';
+    let isFetchingMore = false;
+    let fetchCooldown  = false;     // prevents rapid-fire requests
+
+    /* API_BASE is injected by Python when the page is served */
+    const API_BASE = null;
+
+    /* ================================================================
+       Chart Initialisation
+       ================================================================ */
+    function initChart() {
+        const container = document.getElementById('chart-container');
+
+        chart = LightweightCharts.createChart(container, {
+            layout: {
+                background: { type: 'solid', color: '#131722' },
+                textColor:  '#d1d4dc',
+                fontSize:    12,
+            },
+            grid: {
+                vertLines: { color: '#1e222d' },
+                horzLines: { color: '#1e222d' },
+            },
+            crosshair: {
+                mode: LightweightCharts.CrosshairMode.Normal,
+                vertLine: { color: '#758696', width: 1, style: 3, labelBackgroundColor: '#2a2e39' },
+                horzLine: { color: '#758696', width: 1, style: 3, labelBackgroundColor: '#2a2e39' },
+            },
+            rightPriceScale: {
+                borderColor: '#2a2e39',
+                scaleMargins: { top: 0.1, bottom: 0.2 },
+            },
+            timeScale: {
+                borderColor:     '#2a2e39',
+                timeVisible:     true,
+                secondsVisible:  false,
+                rightOffset:     5,
+                minBarSpacing:   3,
+            },
+            handleScroll: { vertTouchDrag: false },
+        });
+
+        /* ── Candlestick Series ── */
+        candleSeries = chart.addCandlestickSeries({
+            upColor:       '#089981',
+            downColor:     '#f23645',
+            borderUpColor: '#089981',
+            borderDownColor: '#f23645',
+            wickUpColor:   '#089981',
+            wickDownColor: '#f23645',
+        });
+
+        /* ── Volume Histogram ── */
+        volumeSeries = chart.addHistogramSeries({
+            priceFormat:  { type: 'volume' },
+            priceScaleId: 'volume',
+        });
+        volumeSeries.priceScale().applyOptions({
+            scaleMargins: { top: 0.82, bottom: 0 },
+        });
+
+        /* ── Responsive resize ── */
+        const ro = new ResizeObserver(entries => {
+            for (const e of entries) {
+                const { width, height } = e.contentRect;
+                chart.applyOptions({ width, height });
+            }
+        });
+        ro.observe(container);
+
+        /* ── Crosshair legend ── */
+        chart.subscribeCrosshairMove(onCrosshairMove);
+
+        /* ── Scroll-to-reveal ── */
+        chart.timeScale().subscribeVisibleTimeRangeChange(onVisibleRangeChange);
+    }
+
+    /* ================================================================
+       Crosshair Legend
+       ================================================================ */
+    function onCrosshairMove(param) {
+        const legend = document.getElementById('legend');
+        if (!param || !param.time || !param.seriesData) {
+            legend.innerHTML = '';
+            return;
+        }
+        const candle = param.seriesData.get(candleSeries);
+        if (!candle) { legend.innerHTML = ''; return; }
+
+        const dir   = candle.close >= candle.open ? 'up' : 'down';
+        const fmt   = v => v.toFixed(6).replace(/\.?0+$/, '') || '0';
+        legend.innerHTML =
+            `<b>${currentSymbol}</b><br>` +
+            `O <span class="value ${dir}">${fmt(candle.open)}</span>  ` +
+            `H <span class="value ${dir}">${fmt(candle.high)}</span>  ` +
+            `L <span class="value ${dir}">${fmt(candle.low)}</span>  ` +
+            `C <span class="value ${dir}">${fmt(candle.close)}</span>`;
+    }
+
+    /* ================================================================
+       Scroll-to-Reveal ("Drag to Reveal Data" Logic)
+       ================================================================ */
+    function onVisibleRangeChange(range) {
+        if (!range || isFetchingMore || fetchCooldown || !currentSymbol) return;
+
+        const data = chartData[currentSymbol];
+        if (!data || data.length === 0) return;
+
+        const lastDataTime = data[data.length - 1].time;
+
+        /* User scrolled to the right edge → request newer data */
+        if (range.to >= lastDataTime) {
+            isFetchingMore = true;
+            updateInfoBar('loading', 'Fetching latest data…');
+
+            if (API_BASE) {
+                const url = `${API_BASE}/api/latest_data?symbol=${encodeURIComponent(currentSymbol)}&since=${lastDataTime}`;
+                fetch(url)
+                    .then(res => res.json())
+                    .then(result => {
+                        if (result && result.length > 0) {
+                            appendData(result);
+                            updateInfoBar('connected', `+${result.length} candles loaded`);
+                        } else {
+                            updateInfoBar('connected', 'Up to date');
+                        }
+                        isFetchingMore = false;
+                        /* Cooldown prevents spamming while at edge */
+                        fetchCooldown = true;
+                        setTimeout(() => { fetchCooldown = false; }, 3000);
+                    })
+                    .catch(() => {
+                        updateInfoBar('error', 'Fetch failed');
+                        isFetchingMore = false;
+                        fetchCooldown = true;
+                        setTimeout(() => { fetchCooldown = false; }, 5000);
+                    });
+            } else {
+                isFetchingMore = false;
+            }
+        }
+    }
+
+    /* ================================================================
+       Data Rendering
+       ================================================================ */
+
+    /** Called once with the full initial dataset. */
+    function renderChart(data) {
+        chartData = data.data || {};
+        const coins = data.coins || [];
+
+        /* Populate coin selector */
+        const select = document.getElementById('coin-select');
+        select.innerHTML = '';
+        coins.forEach(coin => {
+            const opt = document.createElement('option');
+            opt.value       = coin;
+            opt.textContent = coin;
+            select.appendChild(opt);
+        });
+
+        if (coins.length > 0) {
+            currentSymbol = coins[0];
+            select.value  = currentSymbol;
+            displayCoin(currentSymbol);
+        }
+
+        updateInfoBar('connected', `${coins.length} coin(s) loaded`);
+    }
+
+    /** User picked a different coin from the dropdown. */
+    function onCoinChange(value) {
+        if (!value) value = document.getElementById('coin-select').value;
+        currentSymbol = value;
+        displayCoin(value);
+    }
+    /* Bind the selector */
+    document.getElementById('coin-select')
+            .addEventListener('change', e => onCoinChange(e.target.value));
+
+    /** Render one symbol on the chart. */
+    function displayCoin(symbol) {
+        const data = chartData[symbol];
+        if (!data || data.length === 0) return;
+
+        /* Candlesticks */
+        candleSeries.setData(data.map(d => ({
+            time:  d.time,
+            open:  d.open,
+            high:  d.high,
+            low:   d.low,
+            close: d.close,
+        })));
+
+        /* Volume */
+        volumeSeries.setData(data.map(d => ({
+            time:  d.time,
+            value: d.volume || 0,
+            color: d.close >= d.open
+                ? 'rgba(8, 153, 129, 0.5)'
+                : 'rgba(242, 54, 69, 0.5)',
+        })));
+
+        chart.timeScale().fitContent();
+        updateInfoBar('connected', `${symbol} — ${data.length} candles`);
+    }
+
+    /** Append incremental candles fetched via the Python bridge. */
+    function appendData(newRecords) {
+        if (!currentSymbol || !newRecords || newRecords.length === 0) return;
+
+        const existing = chartData[currentSymbol] || [];
+        const lastTime = existing.length > 0 ? existing[existing.length - 1].time : 0;
+
+        const unique = newRecords.filter(r => r.time > lastTime);
+        if (unique.length === 0) return;
+
+        chartData[currentSymbol] = existing.concat(unique);
+
+        unique.forEach(d => {
+            candleSeries.update({
+                time:  d.time,
+                open:  d.open,
+                high:  d.high,
+                low:   d.low,
+                close: d.close,
+            });
+            volumeSeries.update({
+                time:  d.time,
+                value: d.volume || 0,
+                color: d.close >= d.open
+                    ? 'rgba(8, 153, 129, 0.5)'
+                    : 'rgba(242, 54, 69, 0.5)',
+            });
+        });
+    }
+
+    /* ================================================================
+       Helpers
+       ================================================================ */
+    function updateInfoBar(status, text) {
+        document.querySelector('#info-bar .status-dot').className = `status-dot ${status}`;
+        document.getElementById('info-text').textContent = text;
+    }
+
+    /* ================================================================
+       Bootstrap
+       ================================================================ */
+    document.addEventListener('DOMContentLoaded', () => {
+        initChart();
+
+        /* INITIAL_DATA is injected by Python before loading the page */
+        const initialData = INITIAL_DATA;
+        if (initialData && initialData.coins) {
+            renderChart(initialData);
+        }
+    });
+    </script>
+</body>
+</html>
