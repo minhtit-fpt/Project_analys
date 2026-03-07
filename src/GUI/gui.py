@@ -501,7 +501,7 @@ class BinanceFetcherGUI(ctk.CTk):
         year_label.pack(side="left")
 
         current_year = datetime.now().year
-        year_values = [str(y) for y in range(2019, current_year + 1)]
+        year_values = [str(y) for y in range(2020, current_year + 1)]
 
         self.specific_year_var = ctk.StringVar(value=str(current_year))
         self.specific_year_combo = ctk.CTkComboBox(
@@ -799,8 +799,20 @@ class BinanceFetcherGUI(ctk.CTk):
             cols = ["time", "open", "high", "low", "close"]
             if "volume" in coin_df.columns:
                 cols.append("volume")
+            for ma_col in ("MA_7", "MA_25", "MA_99",
+                           "ma_volume_7", "ma_volume_25", "ma_volume_99"):
+                if ma_col in coin_df.columns:
+                    cols.append(ma_col)
 
-            result["data"][coin] = coin_df[cols].to_dict("records")
+            records = coin_df[cols].to_dict("records")
+            # Replace NaN MA values with None so they become JSON null
+            for rec in records:
+                for ma_col in ("MA_7", "MA_25", "MA_99",
+                               "ma_volume_7", "ma_volume_25", "ma_volume_99"):
+                    if ma_col in rec and (rec[ma_col] is None or rec[ma_col] != rec[ma_col]):
+                        rec[ma_col] = None
+
+            result["data"][coin] = records
 
         return json.dumps(result)
 

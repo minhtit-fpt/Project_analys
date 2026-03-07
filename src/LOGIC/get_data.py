@@ -118,8 +118,8 @@ class GetData:
             Timestamp in milliseconds of the first candle, or None if not found
         """
         try:
-            # Start from a very early date (Binance Futures started around 2019)
-            start_date = self.exchange.parse8601('2019-01-01T00:00:00Z')
+            # Start from a very early date (Binance Futures started around 2020)
+            start_date = self.exchange.parse8601('2020-01-01T00:00:00Z')
             
             # Fetch the first available candle
             candles = self.exchange.fetch_ohlcv(
@@ -201,13 +201,17 @@ class GetData:
             # Calculate Moving Averages
             df['MA_7'] = df['close'].rolling(window=7, min_periods=1).mean()
             df['MA_25'] = df['close'].rolling(window=25, min_periods=1).mean()
-            df['MA_50'] = df['close'].rolling(window=50, min_periods=1).mean()
             df['MA_99'] = df['close'].rolling(window=99, min_periods=1).mean()
-            df['MA_200'] = df['close'].rolling(window=200, min_periods=1).mean()
+            
+            # Calculate Volume Moving Averages
+            df['ma_volume_7'] = df['volume'].rolling(window=7).mean()
+            df['ma_volume_25'] = df['volume'].rolling(window=25).mean()
+            df['ma_volume_99'] = df['volume'].rolling(window=99).mean()
             
             # Reorder columns
             df = df[['symbol', 'date', 'open', 'high', 'low', 'close', 
-                    'volume', 'MA_7', 'MA_25', 'MA_50', 'MA_99', 'MA_200']]
+                    'volume', 'MA_7', 'MA_25', 'MA_99',
+                    'ma_volume_7', 'ma_volume_25', 'ma_volume_99']]
             
             return df
             

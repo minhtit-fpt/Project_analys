@@ -267,7 +267,8 @@ class SaveData:
         # 3. Float columns: downcast float64 → float32
         #    float32 gives ~7 decimal digits of precision, sufficient for price/volume data
         float_cols = ['open', 'high', 'low', 'close', 'volume',
-                      'MA_7', 'MA_25', 'MA_50', 'MA_99', 'MA_200']
+                      'MA_7', 'MA_25', 'MA_99',
+                      'ma_volume_7', 'ma_volume_25', 'ma_volume_99']
         for col in float_cols:
             if col in optimized.columns:
                 optimized[col] = optimized[col].astype('float32')
