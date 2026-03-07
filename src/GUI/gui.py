@@ -39,8 +39,24 @@ class _ChartRequestHandler(BaseHTTPRequestHandler):
             self._serve_chart_html()
         elif parsed.path == "/api/latest_data":
             self._handle_latest_data(parsed)
+        elif parsed.path == "/lightweight-charts.standalone.production.js":
+            self._serve_static_asset("lightweight-charts.standalone.production.js", "application/javascript")
         else:
             self.send_error(404)
+
+    def _serve_static_asset(self, filename, content_type):
+        assets_dir = os.path.join(os.path.dirname(__file__), "assets")
+        filepath = os.path.join(assets_dir, filename)
+        if not os.path.isfile(filepath):
+            self.send_error(404)
+            return
+        with open(filepath, "rb") as f:
+            data = f.read()
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
     def _serve_chart_html(self):
         html_bytes = self.server.chart_html.encode("utf-8")
@@ -826,7 +842,7 @@ class BinanceFetcherGUI(ctk.CTk):
         via ``fetch()``.
         """
         # Read the HTML template packaged alongside this module
-        html_path = os.path.join(os.path.dirname(__file__), "chart.html")
+        html_path = os.path.join(os.path.dirname(__file__), "assets", "chart.html")
         with open(html_path, "r", encoding="utf-8") as fh:
             html_template = fh.read()
 
