@@ -1009,9 +1009,9 @@ class BinanceFetcherGUI(ctk.CTk):
         try:
             from src.LOGIC.google_cloud_storage_api import GoogleCloudStorageAPI
             from src.LOGIC.chart_generator import ChartGenerator
-            import logging
+            from src.core.logger import get_logger
 
-            logger = logging.getLogger(__name__)
+            logger = get_logger(__name__)
 
             # --- Initialization ---
             self.progress_reporter.report(
@@ -1163,10 +1163,10 @@ class BinanceFetcherGUI(ctk.CTk):
             from src.LOGIC.google_cloud_storage_api import GoogleCloudStorageAPI
             from src.LOGIC.get_data import GetData
             from src.LOGIC.save_data import SaveData
-            import logging
+            from src.core.logger import get_logger
             
-            # Setup a simple logger
-            logger = logging.getLogger(__name__)
+            # Setup a logger using centralized config
+            logger = get_logger(__name__)
             
             # Report initialization
             self.progress_reporter.report(

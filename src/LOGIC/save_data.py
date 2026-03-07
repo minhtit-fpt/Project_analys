@@ -13,6 +13,8 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from src.core.logger import get_logger
+from src.core.constants import DEFAULT_TIMEFRAME, DATE_FORMAT
 from src.LOGIC.google_cloud_storage_api import GoogleCloudStorageAPI
 
 
@@ -28,18 +30,19 @@ class SaveData:
     - Delegate upload operations to GoogleCloudStorageAPI
     """
     
-    def __init__(self, storage_api: GoogleCloudStorageAPI, timeframe: str = '1d', logger: logging.Logger = None):
+    def __init__(self, storage_api: GoogleCloudStorageAPI, timeframe: str = DEFAULT_TIMEFRAME,
+                 logger: logging.Logger = None):
         """
         Initialize the data saver.
         
         Args:
             storage_api: GoogleCloudStorageAPI instance for file uploads
-            timeframe: Candle timeframe for filename (default: '1d')
+            timeframe: Candle timeframe for filename
             logger: Optional logger instance. If not provided, creates a new one.
         """
         self.storage = storage_api
         self.timeframe = timeframe
-        self.logger = logger or logging.getLogger(__name__)
+        self.logger = logger or get_logger(__name__)
     
     def save_single_year(self, year: int, dataframes: List[pd.DataFrame]):
         """

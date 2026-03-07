@@ -12,6 +12,10 @@ from typing import List, Optional
 from collections import defaultdict
 from tqdm import tqdm
 
+from src.core.config import settings
+from src.core.logger import get_logger
+from src.core.constants import DEFAULT_PRICE_THRESHOLD, DEFAULT_TIMEFRAME, OHLCV_COLUMNS
+
 
 class GetData:
     """
@@ -26,18 +30,19 @@ class GetData:
     - Calculate moving averages
     """
     
-    def __init__(self, price_threshold: float = 10.0, timeframe: str = '1d', logger: logging.Logger = None):
+    def __init__(self, price_threshold: float = DEFAULT_PRICE_THRESHOLD,
+                 timeframe: str = DEFAULT_TIMEFRAME, logger: logging.Logger = None):
         """
         Initialize the Binance data fetcher.
         
         Args:
-            price_threshold: Maximum price in USDT to filter coins (default: 10.0)
-            timeframe: Candle timeframe (default: '1d' for daily)
+            price_threshold: Maximum price in USDT to filter coins
+            timeframe: Candle timeframe (default from constants)
             logger: Optional logger instance. If not provided, creates a new one.
         """
         self.price_threshold = price_threshold
         self.timeframe = timeframe
-        self.logger = logger or logging.getLogger(__name__)
+        self.logger = logger or get_logger(__name__)
         self.data_store = defaultdict(list)  # Store data grouped by year
         
         # Initialize ccxt exchange with rate limit protection
