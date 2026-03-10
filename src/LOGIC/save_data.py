@@ -58,7 +58,7 @@ class SaveData:
             self.logger.warning(f"No data to save for year {year}.")
             return
         
-        current_date = datetime.now().strftime('%Y-%m-%d')
+        current_date = datetime.now().strftime(DATE_FORMAT)
         
         self.logger.info("=" * 80)
         self.logger.info(f"Saving data for year {year} to Google Cloud Storage...")
