@@ -883,11 +883,17 @@ class BinanceFetcherGUI(ctk.CTk):
     def _stop_chart_server(self):
         """Shut down the chart HTTP server if it is running."""
         if self._chart_server is not None:
+            server = self._chart_server
+            self._chart_server = None
             try:
-                self._chart_server.shutdown()
+                server.shutdown()
             except Exception:
                 pass
-            self._chart_server = None
+            finally:
+                try:
+                    server.server_close()
+                except Exception:
+                    pass
 
     def _reopen_chart_window(self):
         """Reopen the chart in the browser using the last generated dataset."""
