@@ -41,6 +41,8 @@ class _ChartRequestHandler(BaseHTTPRequestHandler):
             self._handle_latest_data(parsed)
         elif parsed.path == "/lightweight-charts.standalone.production.js":
             self._serve_static_asset("lightweight-charts.standalone.production.js", "application/javascript")
+        elif parsed.path == "/chart.css":
+            self._serve_static_asset("chart.css", "text/css")
         else:
             self.send_error(404)
 
