@@ -851,10 +851,13 @@ class BinanceFetcherGUI(ctk.CTk):
         # Pick a free port for this server instance
         port = _find_free_port()
 
+        # Escape '</' to prevent premature </script> tag termination (XSS)
+        safe_chart_json = chart_json.replace("</", r"<\/")
+
         # Inject the dataset + API base URL into the page
         html_content = html_template.replace(
             "const initialData = INITIAL_DATA;",
-            f"const initialData = {chart_json};",
+            f"const initialData = {safe_chart_json};",
         ).replace(
             "const API_BASE = null;",
             f'const API_BASE = "http://127.0.0.1:{port}";',
