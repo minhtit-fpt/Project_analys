@@ -16,19 +16,14 @@ Usage:
     - CLI Mode: python main.py --cli
 """
 
-import os
 import sys
-import logging
 import argparse
-from datetime import datetime
-from dotenv import load_dotenv
 
+from src.core.config import settings
+from src.core.logger import get_logger
 from src.LOGIC.google_cloud_storage_api import GoogleCloudStorageAPI
 from src.LOGIC.get_data import GetData
 from src.LOGIC.save_data import SaveData
-
-# Load environment variables from .env file
-load_dotenv()
 
 
 class Main:
@@ -44,19 +39,18 @@ class Main:
         - SaveData: Handles data saving to Google Cloud Storage
     """
     
-    def __init__(self, price_threshold: float = 10.0, timeframe: str = '1d'):
+    def __init__(self, price_threshold: float = settings.price_threshold,
+                 timeframe: str = settings.timeframe):
         """
         Initialize the main orchestrator.
         
         Args:
-            price_threshold: Maximum price in USDT to filter coins (default: 10.0)
-            timeframe: Candle timeframe (default: '1d' for daily)
+            price_threshold: Maximum price in USDT to filter coins
+            timeframe: Candle timeframe (default from settings)
         """
         self.price_threshold = price_threshold
         self.timeframe = timeframe
-        
-        # Setup logging first
-        self._setup_logging()
+        self.logger = get_logger(__name__)
         
         self.logger.info("=" * 80)
         self.logger.info("Initializing Binance Futures Historical Data Fetcher")
@@ -64,21 +58,6 @@ class Main:
         
         # Initialize components
         self._initialize_components()
-    
-    def _setup_logging(self):
-        """Configure logging for the application."""
-        log_dir = 'logs'
-        os.makedirs(log_dir, exist_ok=True)
-        
-        logging.basicConfig(
-            level=logging.ERROR,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler(f'{log_dir}/binance_fetcher_{datetime.now().strftime("%Y%m%d")}.log'),
-                logging.StreamHandler()
-            ]
-        )
-        self.logger = logging.getLogger(__name__)
     
     def _initialize_components(self):
         """Initialize all child components."""
@@ -181,13 +160,13 @@ def run_cli():
     """Run the application in CLI mode."""
     try:
         # Initialize and run the main orchestrator
-        app = Main(price_threshold=10.0, timeframe='1d')
+        app = Main()
         app.run()
         
     except KeyboardInterrupt:
         print("\n\nProcess interrupted by user. Exiting gracefully...")
     except Exception as e:
-        logging.error(f"Critical error in main execution: {e}")
+        get_logger(__name__).error(f"Critical error in main execution: {e}")
         raise
 
 
@@ -206,7 +185,7 @@ def run_gui():
         print(f"Details: {e}")
         sys.exit(1)
     except Exception as e:
-        logging.error(f"Critical error in GUI execution: {e}")
+        get_logger(__name__).error(f"Critical error in GUI execution: {e}")
         raise
 
 

@@ -7,17 +7,109 @@ import customtkinter as ctk
 from datetime import datetime, timedelta
 from typing import Optional, List
 import threading
+import json
+import os
+import webbrowser
+import socket
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs
 from tkinter import messagebox, filedialog
 
-import matplotlib
-matplotlib.use("TkAgg")
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
 import pandas as pd
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
-from matplotlib.figure import Figure
 
 from src.GUI.progress_reporter import ProgressReporter, ProgressInfo, ExecutionStage
+
+
+# ---------------------------------------------------------------------------
+#  Lightweight HTTP server for the chart bridge
+# ---------------------------------------------------------------------------
+
+class _ChartRequestHandler(BaseHTTPRequestHandler):
+    """Serves the chart HTML page and handles API requests from JavaScript."""
+
+    def log_message(self, format, *args):
+        """Silence default stderr logging."""
+        pass
+
+    # ---- GET ---------------------------------------------------------------
+    def do_GET(self):
+        parsed = urlparse(self.path)
+
+        if parsed.path in ("/", "/chart"):
+            self._serve_chart_html()
+        elif parsed.path == "/api/latest_data":
+            self._handle_latest_data(parsed)
+        elif parsed.path == "/lightweight-charts.standalone.production.js":
+            self._serve_static_asset("lightweight-charts.standalone.production.js", "application/javascript")
+        elif parsed.path == "/chart.css":
+            self._serve_static_asset("chart.css", "text/css")
+        else:
+            self.send_error(404)
+
+    def _serve_static_asset(self, filename, content_type):
+        assets_dir = os.path.join(os.path.dirname(__file__), "assets")
+        filepath = os.path.join(assets_dir, filename)
+        if not os.path.isfile(filepath):
+            self.send_error(404)
+            return
+        with open(filepath, "rb") as f:
+            data = f.read()
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _serve_chart_html(self):
+        html_bytes = self.server.chart_html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(html_bytes)))
+        self.end_headers()
+        self.wfile.write(html_bytes)
+
+    def _handle_latest_data(self, parsed):
+        """``/api/latest_data?symbol=X&since=Y`` → JSON candle array."""
+        qs = parse_qs(parsed.query)
+        symbol = qs.get("symbol", [""])[0]
+        since_str = qs.get("since", ["0"])[0]
+
+        records: list = []
+        if symbol and self.server.data_fetcher_factory:
+            try:
+                fetcher = self.server.data_fetcher_factory()
+                since_ms = int(since_str) * 1000 + 1
+                df = fetcher.fetch_candles(symbol, since_ms)
+                if df is not None and not df.empty:
+                    df = df.copy()
+                    df["time"] = (df["date"].astype("int64") // 10 ** 9).astype(int)
+                    cols = ["time", "open", "high", "low", "close"]
+                    if "volume" in df.columns:
+                        cols.append("volume")
+                    records = df[cols].to_dict("records")
+            except Exception as e:
+                print(f"[ChartServer] Error fetching latest data: {e}")
+
+        body = json.dumps(records).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body)
+
+
+class _ChartHTTPServer(HTTPServer):
+    """HTTPServer subclass carrying extra state for the chart."""
+    chart_html: str = ""
+    data_fetcher_factory = None  # callable → GetData instance
+
+
+def _find_free_port() -> int:
+    """Return an available TCP port on localhost."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        return s.getsockname()[1]
 
 
 class BinanceFetcherGUI(ctk.CTk):
@@ -427,7 +519,7 @@ class BinanceFetcherGUI(ctk.CTk):
         year_label.pack(side="left")
 
         current_year = datetime.now().year
-        year_values = [str(y) for y in range(2019, current_year + 1)]
+        year_values = [str(y) for y in range(2020, current_year + 1)]
 
         self.specific_year_var = ctk.StringVar(value=str(current_year))
         self.specific_year_combo = ctk.CTkComboBox(
@@ -611,7 +703,7 @@ class BinanceFetcherGUI(ctk.CTk):
     # =========================================================================
 
     def _create_results_view(self):
-        """Create the results view with chart display."""
+        """Create the results view (simplified – chart is in a WebView window)."""
         self.results_frame = ctk.CTkFrame(self)
         # Not packed — shown only after chart generation completes
 
@@ -647,73 +739,31 @@ class BinanceFetcherGUI(ctk.CTk):
         )
         self.results_info_label.pack(anchor="w", padx=20, pady=(0, 5))
 
-        # === Chart content ===
-        self._chart_content_frame = ctk.CTkFrame(self.results_frame)
-        self._chart_content_frame.pack(fill="both", expand=True, padx=20, pady=(0, 10))
+        # --- Chart status area ---
+        status_area = ctk.CTkFrame(self.results_frame)
+        status_area.pack(fill="both", expand=True, padx=20, pady=(0, 10))
 
-        # Chart control bar
-        chart_ctrl = ctk.CTkFrame(self._chart_content_frame, fg_color="transparent")
-        chart_ctrl.pack(fill="x", padx=5, pady=(5, 3))
-
-        # Data column selector
-        col_label = ctk.CTkLabel(chart_ctrl, text="Data:", font=ctk.CTkFont(size=12))
-        col_label.pack(side="left", padx=(0, 5))
-
-        self._chart_column_var = ctk.StringVar(value="close")
-        self._chart_column_combo = ctk.CTkComboBox(
-            chart_ctrl,
-            values=["close", "open", "high", "low", "volume",
-                    "MA_7", "MA_25", "MA_50", "MA_99", "MA_200"],
-            variable=self._chart_column_var,
-            width=110,
-            command=lambda _: self._redraw_chart(),
+        chart_msg = ctk.CTkLabel(
+            status_area,
+            text="📊 The interactive TradingView chart is displayed\n"
+                 "in its own window.  Use the button below to\n"
+                 "reopen it if you closed it.",
+            font=ctk.CTkFont(size=15),
+            justify="center",
         )
-        self._chart_column_combo.pack(side="left", padx=(0, 15))
+        chart_msg.pack(expand=True)
 
-        # Coin selector (populated dynamically)
-        coin_label = ctk.CTkLabel(chart_ctrl, text="Coin(s):", font=ctk.CTkFont(size=12))
-        coin_label.pack(side="left", padx=(0, 5))
-
-        self._chart_coin_var = ctk.StringVar(value="(all)")
-        self._chart_coin_combo = ctk.CTkComboBox(
-            chart_ctrl,
-            values=["(all)"],
-            variable=self._chart_coin_var,
-            width=160,
-            command=lambda _: self._redraw_chart(),
+        self._reopen_chart_btn = ctk.CTkButton(
+            status_area,
+            text="🔄  Reopen Chart Window",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            height=42,
+            width=240,
+            fg_color="#2962ff",
+            hover_color="#1e53e5",
+            command=self._reopen_chart_window,
         )
-        self._chart_coin_combo.pack(side="left", padx=(0, 15))
-
-        # Multi-line toggle
-        self._chart_overlay_var = ctk.StringVar(value="overlay")
-        overlay_rb = ctk.CTkRadioButton(
-            chart_ctrl, text="Overlay", variable=self._chart_overlay_var,
-            value="overlay", font=ctk.CTkFont(size=12),
-            command=self._redraw_chart
-        )
-        overlay_rb.pack(side="left", padx=(0, 8))
-
-        separate_rb = ctk.CTkRadioButton(
-            chart_ctrl, text="Separate", variable=self._chart_overlay_var,
-            value="separate", font=ctk.CTkFont(size=12),
-            command=self._redraw_chart
-        )
-        separate_rb.pack(side="left", padx=(0, 15))
-
-        # Normalize toggle for overlay mode
-        self._chart_normalize_var = ctk.BooleanVar(value=False)
-        self._normalize_cb = ctk.CTkCheckBox(
-            chart_ctrl, text="Normalize (%)", variable=self._chart_normalize_var,
-            font=ctk.CTkFont(size=12), command=self._redraw_chart
-        )
-        self._normalize_cb.pack(side="left")
-
-        # The matplotlib canvas placeholder
-        self._chart_canvas_frame = ctk.CTkFrame(self._chart_content_frame)
-        self._chart_canvas_frame.pack(fill="both", expand=True, padx=5, pady=(0, 5))
-
-        self._chart_canvas = None
-        self._chart_toolbar = None
+        self._reopen_chart_btn.pack(pady=(0, 20))
 
         # === Bottom buttons ===
         btn_frame = ctk.CTkFrame(self.results_frame, fg_color="transparent")
@@ -731,206 +781,152 @@ class BinanceFetcherGUI(ctk.CTk):
         )
         self.export_filtered_btn.pack(side="left", padx=(0, 10))
 
-        self._export_chart_btn = ctk.CTkButton(
-            btn_frame,
-            text="🖼️ Export Chart PNG",
-            font=ctk.CTkFont(size=14),
-            height=40,
-            width=180,
-            fg_color="#2b8a3e",
-            hover_color="#237032",
-            command=self._export_chart_png,
-        )
-        self._export_chart_btn.pack(side="left")
+        # Chart HTTP server handle (managed externally)
+        self._chart_server = None
+        self._chart_timeframe = "1d"
 
-    # --- Chart drawing -------------------------------------------------------
+    # --- WebView chart helpers -----------------------------------------------
 
-    def _redraw_chart(self):
-        """Redraw the matplotlib chart with current settings."""
-        if self._last_filtered_df is None or self._last_filtered_df.empty:
-            return
+    def _prepare_chart_data(self, df: pd.DataFrame) -> str:
+        """
+        Convert a filtered DataFrame into a JSON string consumable by
+        the TradingView Lightweight Charts HTML page.
 
-        column = self._chart_column_var.get()
-        selected_coin = self._chart_coin_var.get()
-        mode = self._chart_overlay_var.get()
-        normalize = self._chart_normalize_var.get()
+        Returns JSON of the form::
 
-        df = self._last_filtered_df.copy()
-
-        # Ensure 'date' is datetime and sorted
-        df['date'] = pd.to_datetime(df['date'])
-        df.sort_values('date', inplace=True)
-
-        # Validate column exists
-        if column not in df.columns:
-            return
-
-        # Determine which coins to plot
-        if selected_coin == "(all)":
-            coins = sorted(df['symbol'].unique())
-        else:
-            coins = [selected_coin]
-            df = df[df['symbol'] == selected_coin]
-
-        # Limit to 20 coins max for readability
-        MAX_COINS = 20
-        if len(coins) > MAX_COINS:
-            coins = coins[:MAX_COINS]
-            df = df[df['symbol'].isin(coins)]
-
-        # Destroy previous canvas
-        self._destroy_chart_canvas()
-
-        # Dark theme for matplotlib
-        plt.style.use("dark_background")
-
-        if mode == "separate" and len(coins) > 1:
-            self._draw_separate_charts(df, coins, column)
-        else:
-            self._draw_overlay_chart(df, coins, column, normalize)
-
-    def _draw_overlay_chart(self, df, coins: list, column: str, normalize: bool):
-        """Draw all coins on a single axes with their own line."""
-        fig = Figure(figsize=(12, 6), dpi=100, facecolor="#1a1a1a")
-        ax = fig.add_subplot(111)
-        ax.set_facecolor("#1a1a1a")
+            {
+                "coins": ["BTC/USDT", ...],
+                "data": {
+                    "BTC/USDT": [
+                        {"time": <unix-sec>, "open": …, "high": …, …},
+                        …
+                    ]
+                }
+            }
+        """
+        result: dict = {"coins": [], "data": {}}
+        coins = sorted(df["symbol"].unique().tolist())
+        result["coins"] = coins
 
         for coin in coins:
-            coin_df = df[df['symbol'] == coin]
-            if coin_df.empty:
-                continue
+            coin_df = df[df["symbol"] == coin].sort_values("date").copy()
+            coin_df["time"] = (
+                coin_df["date"].astype("int64") // 10 ** 9
+            ).astype(int)
 
-            dates = coin_df['date']
-            values = coin_df[column].astype(float)
+            cols = ["time", "open", "high", "low", "close"]
+            if "volume" in coin_df.columns:
+                cols.append("volume")
+            for ma_col in ("MA_7", "MA_25", "MA_99",
+                           "ma_volume_7", "ma_volume_25", "ma_volume_99"):
+                if ma_col in coin_df.columns:
+                    cols.append(ma_col)
 
-            if normalize and len(values) > 0:
-                first_val = values.iloc[0]
-                if first_val != 0:
-                    values = ((values - first_val) / first_val) * 100
+            records = coin_df[cols].to_dict("records")
+            # Replace NaN MA values with None so they become JSON null
+            for rec in records:
+                for ma_col in ("MA_7", "MA_25", "MA_99",
+                               "ma_volume_7", "ma_volume_25", "ma_volume_99"):
+                    if ma_col in rec and (rec[ma_col] is None or rec[ma_col] != rec[ma_col]):
+                        rec[ma_col] = None
 
-            label = coin.replace('/USDT', '')
-            ax.plot(dates, values, linewidth=1.3, label=label, alpha=0.85)
+            result["data"][coin] = records
 
-        ax.set_xlabel("Date", fontsize=11, color="white")
-        ylabel = f"{column} (% change)" if normalize else column
-        ax.set_ylabel(ylabel, fontsize=11, color="white")
-        ax.tick_params(colors="white", labelsize=9)
-        ax.grid(True, alpha=0.15, color="white")
+        return json.dumps(result)
 
-        # Date formatting
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
-        ax.xaxis.set_major_locator(mdates.AutoDateLocator())
-        fig.autofmt_xdate(rotation=30)
+    def _launch_chart_in_browser(self, chart_json: str, timeframe: str):
+        """
+        Start a local HTTP server and open the chart in the default browser.
 
-        # Legend
-        if len(coins) <= 15:
-            ax.legend(fontsize=8, loc="upper left", ncol=min(len(coins), 5),
-                      framealpha=0.5, facecolor="#2b2b2b", edgecolor="gray")
+        The HTML template is loaded from ``chart.html`` next to this module.
+        ``INITIAL_DATA`` is replaced with *chart_json* so the chart renders
+        immediately, and ``API_BASE`` is set so JS can call back into Python
+        via ``fetch()``.
+        """
+        # Read the HTML template packaged alongside this module
+        html_path = os.path.join(os.path.dirname(__file__), "assets", "chart.html")
+        with open(html_path, "r", encoding="utf-8") as fh:
+            html_template = fh.read()
 
-        title_text = f"{column.upper()}"
-        if len(coins) == 1:
-            title_text += f" — {coins[0]}"
-        elif normalize:
-            title_text += " — Normalized (%)"
-        ax.set_title(title_text, fontsize=14, fontweight="bold", color="white",
-                     pad=12)
+        # Pick a free port for this server instance
+        port = _find_free_port()
 
-        fig.tight_layout()
-        self._embed_figure(fig)
+        # Escape '</' to prevent premature </script> tag termination (XSS)
+        safe_chart_json = chart_json.replace("</", r"<\/")
 
-    def _draw_separate_charts(self, df, coins: list, column: str):
-        """Draw each coin on its own subplot in a vertical grid."""
-        n = len(coins)
-        cols = min(n, 3)
-        rows = (n + cols - 1) // cols
+        # Inject the dataset + API base URL into the page
+        html_content = html_template.replace(
+            "const initialData = INITIAL_DATA;",
+            f"const initialData = {safe_chart_json};",
+        ).replace(
+            "const API_BASE = null;",
+            f'const API_BASE = "http://127.0.0.1:{port}";',
+        )
 
-        fig = Figure(figsize=(12, max(3.5 * rows, 5)), dpi=100,
-                     facecolor="#1a1a1a")
+        # Shut down a previously running chart server
+        self._stop_chart_server()
 
-        for idx, coin in enumerate(coins):
-            ax = fig.add_subplot(rows, cols, idx + 1)
-            ax.set_facecolor("#1a1a1a")
+        # Build the data-fetcher factory (lazy import)
+        def _fetcher_factory():
+            from src.LOGIC.get_data import GetData
+            return GetData(timeframe=timeframe)
 
-            coin_df = df[df['symbol'] == coin]
-            if coin_df.empty:
-                continue
+        server = _ChartHTTPServer(("127.0.0.1", port), _ChartRequestHandler)
+        server.chart_html = html_content
+        server.data_fetcher_factory = _fetcher_factory
+        self._chart_server = server
 
-            dates = coin_df['date']
-            values = coin_df[column].astype(float)
+        # Run the server in a daemon thread
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
 
-            color = plt.cm.tab10(idx % 10)
-            ax.plot(dates, values, linewidth=1.2, color=color, alpha=0.85)
+        # Open in the default browser
+        webbrowser.open(f"http://127.0.0.1:{port}/chart")
 
-            short_name = coin.replace('/USDT', '')
-            ax.set_title(short_name, fontsize=11, fontweight="bold",
-                         color="white", pad=6)
-            ax.tick_params(colors="white", labelsize=8)
-            ax.grid(True, alpha=0.12, color="white")
-            ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
-            ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+    def _stop_chart_server(self):
+        """Shut down the chart HTTP server if it is running."""
+        if self._chart_server is not None:
+            server = self._chart_server
+            self._chart_server = None
+            try:
+                server.shutdown()
+            except Exception:
+                pass
+            finally:
+                try:
+                    server.server_close()
+                except Exception:
+                    pass
 
-            for lbl in ax.get_xticklabels():
-                lbl.set_rotation(25)
-                lbl.set_fontsize(7)
+    def _reopen_chart_window(self):
+        """Reopen the chart in the browser using the last generated dataset."""
+        if self._last_filtered_df is None or self._last_filtered_df.empty:
+            messagebox.showwarning("No Data", "Generate chart data first.")
+            return
+        chart_json = self._prepare_chart_data(self._last_filtered_df)
+        self._launch_chart_in_browser(chart_json, self._chart_timeframe)
 
-        fig.suptitle(f"{column.upper()} — Individual Coins", fontsize=14,
-                     fontweight="bold", color="white", y=0.99)
-        fig.tight_layout(rect=[0, 0, 1, 0.97])
-        self._embed_figure(fig)
-
-    def _embed_figure(self, fig: Figure):
-        """Embed a matplotlib Figure into the chart canvas frame."""
-        self._destroy_chart_canvas()
-
-        self._chart_canvas = FigureCanvasTkAgg(fig, master=self._chart_canvas_frame)
-        self._chart_canvas.draw()
-
-        # Toolbar for zoom/pan
-        toolbar_frame = ctk.CTkFrame(self._chart_canvas_frame, fg_color="#2b2b2b",
-                                     height=35)
-        toolbar_frame.pack(side="bottom", fill="x")
-        self._chart_toolbar = NavigationToolbar2Tk(self._chart_canvas, toolbar_frame)
-        self._chart_toolbar.update()
-
-        self._chart_canvas.get_tk_widget().pack(fill="both", expand=True)
-
-        # Keep ref to figure for export
-        self._current_figure = fig
-
-    def _destroy_chart_canvas(self):
-        """Tear down the existing matplotlib canvas and toolbar."""
-        if self._chart_canvas:
-            self._chart_canvas.get_tk_widget().destroy()
-            self._chart_canvas = None
-        if self._chart_toolbar:
-            self._chart_toolbar.master.destroy()
-            self._chart_toolbar = None
-
-    def _show_results_view(self, filtered_df):
-        """Switch to the results view and draw the chart."""
+    def _show_results_view(self, filtered_df, timeframe: str = "1d"):
+        """Switch to the results view and open the interactive chart window."""
         self.main_frame.pack_forget()
         self.chart_config_frame.pack_forget()
 
-        n_coins = filtered_df['symbol'].nunique() if filtered_df is not None else 0
+        n_coins = filtered_df["symbol"].nunique() if filtered_df is not None else 0
         n_rows = len(filtered_df) if filtered_df is not None else 0
         self.results_info_label.configure(
             text=f"  {n_coins} coin(s)  ·  {n_rows} total candles"
         )
 
-        # Populate the coin selector for chart
-        if filtered_df is not None and not filtered_df.empty:
-            coins = sorted(filtered_df['symbol'].unique().tolist())
-            combo_values = ["(all)"] + coins
-            self._chart_coin_combo.configure(values=combo_values)
-            self._chart_coin_var.set("(all)" if len(coins) > 1 else coins[0])
-        else:
-            self._chart_coin_combo.configure(values=["(all)"])
-            self._chart_coin_var.set("(all)")
-
         self.results_frame.pack(fill="both", expand=True, padx=20, pady=20)
-        self._redraw_chart()
 
-    def _on_chart_generation_complete(self, n_coins: int, n_rows: int):
+        # Launch the TradingView WebView chart
+        if filtered_df is not None and not filtered_df.empty:
+            self._chart_timeframe = timeframe
+            chart_json = self._prepare_chart_data(filtered_df)
+            self._launch_chart_in_browser(chart_json, timeframe)
+
+    def _on_chart_generation_complete(self, n_coins: int, n_rows: int,
+                                      timeframe: str = "1d"):
         """Handle chart generation completion on the main thread."""
         self._is_running = False
         self.start_button.configure(state="normal")
@@ -952,7 +948,7 @@ class BinanceFetcherGUI(ctk.CTk):
 
         # Show results in the chart view
         if self._last_filtered_df is not None:
-            self._show_results_view(self._last_filtered_df)
+            self._show_results_view(self._last_filtered_df, timeframe)
 
     def _export_filtered_csv(self):
         """Export the full filtered dataset to a CSV file."""
@@ -971,23 +967,6 @@ class BinanceFetcherGUI(ctk.CTk):
             messagebox.showinfo(
                 "Exported", f"Full data exported to:\n{filepath}"
             )
-
-    def _export_chart_png(self):
-        """Export the current chart to a PNG image file."""
-        if not hasattr(self, '_current_figure') or self._current_figure is None:
-            messagebox.showwarning("No Chart", "Generate a chart first by switching to Chart View.")
-            return
-
-        filepath = filedialog.asksaveasfilename(
-            defaultextension=".png",
-            filetypes=[("PNG image", "*.png"), ("All files", "*.*")],
-            title="Export Chart",
-            initialfile="chart.png",
-        )
-        if filepath:
-            self._current_figure.savefig(filepath, dpi=200, bbox_inches="tight",
-                                         facecolor=self._current_figure.get_facecolor())
-            messagebox.showinfo("Exported", f"Chart exported to:\n{filepath}")
 
     # --- Generate chart handler -----------------------------------------------
 
@@ -1057,9 +1036,9 @@ class BinanceFetcherGUI(ctk.CTk):
         try:
             from src.LOGIC.google_cloud_storage_api import GoogleCloudStorageAPI
             from src.LOGIC.chart_generator import ChartGenerator
-            import logging
+            from src.core.logger import get_logger
 
-            logger = logging.getLogger(__name__)
+            logger = get_logger(__name__)
 
             # --- Initialization ---
             self.progress_reporter.report(
@@ -1113,7 +1092,7 @@ class BinanceFetcherGUI(ctk.CTk):
 
             # Schedule UI update on the main thread
             self.after(0, lambda: self._on_chart_generation_complete(
-                n_coins, n_rows))
+                n_coins, n_rows, timeframe))
 
         except ImportError as e:
             self.progress_reporter.report_error(
@@ -1211,10 +1190,10 @@ class BinanceFetcherGUI(ctk.CTk):
             from src.LOGIC.google_cloud_storage_api import GoogleCloudStorageAPI
             from src.LOGIC.get_data import GetData
             from src.LOGIC.save_data import SaveData
-            import logging
+            from src.core.logger import get_logger
             
-            # Setup a simple logger
-            logger = logging.getLogger(__name__)
+            # Setup a logger using centralized config
+            logger = get_logger(__name__)
             
             # Report initialization
             self.progress_reporter.report(
@@ -1404,6 +1383,9 @@ class BinanceFetcherGUI(ctk.CTk):
     
     def on_closing(self):
         """Handle window close event."""
+        # Shut down the chart server if it's still running
+        self._stop_chart_server()
+
         if self._is_running:
             if messagebox.askokcancel("Quit", "Process is running. Do you want to quit?"):
                 self._is_running = False

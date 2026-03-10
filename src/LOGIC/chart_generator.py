@@ -12,6 +12,7 @@ from typing import List, Optional
 import pandas as pd
 from dateutil.relativedelta import relativedelta
 
+from src.core.logger import get_logger
 from src.LOGIC.google_cloud_storage_api import GoogleCloudStorageAPI
 from src.GUI.progress_reporter import ProgressReporter, ExecutionStage
 
@@ -40,7 +41,7 @@ class ChartGenerator:
         """
         self.storage = storage_api
         self.progress_reporter = progress_reporter
-        self.logger = logger or logging.getLogger(__name__)
+        self.logger = logger or get_logger(__name__)
 
     # ------------------------------------------------------------------
     # Public API

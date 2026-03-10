@@ -46,3 +46,6 @@ htmlcov/
 
 # json
 *.json
+
+# pdf
+*.pdf

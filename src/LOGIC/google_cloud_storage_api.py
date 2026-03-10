@@ -17,6 +17,9 @@ from typing import Dict, List, Optional
 from google.cloud import storage
 from google.oauth2 import service_account
 
+from src.core.config import settings
+from src.core.logger import get_logger
+
 
 class GoogleCloudStorageAPI:
     """
@@ -42,7 +45,7 @@ class GoogleCloudStorageAPI:
         Args:
             logger: Optional logger instance. If not provided, creates a new one.
         """
-        self.logger = logger or logging.getLogger(__name__)
+        self.logger = logger or get_logger(__name__)
         self.client: Optional[storage.Client] = None
         self.bucket: Optional[storage.Bucket] = None
         self.folder_prefix: str = ""
@@ -63,18 +66,18 @@ class GoogleCloudStorageAPI:
         GOOGLE_APPLICATION_CREDENTIALS.
         """
         try:
-            bucket_name = os.getenv("GCS_BUCKET_NAME")
+            bucket_name = settings.gcs_bucket_name
             if not bucket_name:
                 raise ValueError(
                     "GCS_BUCKET_NAME environment variable is not set"
                 )
 
             # Optional virtual folder prefix (e.g. "binance_data/")
-            self.folder_prefix = os.getenv("GCS_FOLDER_PREFIX", "").strip()
+            self.folder_prefix = settings.gcs_folder_prefix.strip()
             if self.folder_prefix and not self.folder_prefix.endswith("/"):
                 self.folder_prefix += "/"
 
-            credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+            credentials_path = settings.google_application_credentials
             if credentials_path:
                 credentials = service_account.Credentials.from_service_account_file(
                     credentials_path
