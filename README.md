@@ -43,7 +43,7 @@ data/binance_future/
 - `timestamp`: Unix timestamp (ms)
 - `open`, `high`, `low`, `close`: OHLC prices
 - `volume`: Trading volume
-- `MA_7`, `MA_25`, `MA_50`, `MA_99`, `MA_200`: Moving averages
+- `MA_7`, `MA_25`, `MA_99`: Moving averages
 
 ## Configuration
 Modify in `main()` function:

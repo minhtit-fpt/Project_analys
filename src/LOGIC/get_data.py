@@ -12,6 +12,9 @@ from typing import List, Optional
 from collections import defaultdict
 from tqdm import tqdm
 
+from src.core.logger import get_logger
+from src.core.constants import DEFAULT_PRICE_THRESHOLD, DEFAULT_TIMEFRAME
+
 
 class GetData:
     """
@@ -26,18 +29,19 @@ class GetData:
     - Calculate moving averages
     """
     
-    def __init__(self, price_threshold: float = 10.0, timeframe: str = '1d', logger: logging.Logger = None):
+    def __init__(self, price_threshold: float = DEFAULT_PRICE_THRESHOLD,
+                 timeframe: str = DEFAULT_TIMEFRAME, logger: logging.Logger = None):
         """
         Initialize the Binance data fetcher.
         
         Args:
-            price_threshold: Maximum price in USDT to filter coins (default: 10.0)
-            timeframe: Candle timeframe (default: '1d' for daily)
+            price_threshold: Maximum price in USDT to filter coins
+            timeframe: Candle timeframe (default from constants)
             logger: Optional logger instance. If not provided, creates a new one.
         """
         self.price_threshold = price_threshold
         self.timeframe = timeframe
-        self.logger = logger or logging.getLogger(__name__)
+        self.logger = logger or get_logger(__name__)
         self.data_store = defaultdict(list)  # Store data grouped by year
         
         # Initialize ccxt exchange with rate limit protection
@@ -118,8 +122,8 @@ class GetData:
             Timestamp in milliseconds of the first candle, or None if not found
         """
         try:
-            # Start from a very early date (Binance Futures started around 2019)
-            start_date = self.exchange.parse8601('2019-01-01T00:00:00Z')
+            # Start from a very early date (Binance Futures started around 2020)
+            start_date = self.exchange.parse8601('2020-01-01T00:00:00Z')
             
             # Fetch the first available candle
             candles = self.exchange.fetch_ohlcv(
@@ -194,19 +198,24 @@ class GetData:
             # Add symbol column
             df['symbol'] = symbol
             
-            # Convert timestamp to datetime
+            # Convert timestamp to datetime and drop redundant timestamp column
             df['date'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.drop(columns=['timestamp'], inplace=True)
             
             # Calculate Moving Averages
             df['MA_7'] = df['close'].rolling(window=7, min_periods=1).mean()
             df['MA_25'] = df['close'].rolling(window=25, min_periods=1).mean()
-            df['MA_50'] = df['close'].rolling(window=50, min_periods=1).mean()
             df['MA_99'] = df['close'].rolling(window=99, min_periods=1).mean()
-            df['MA_200'] = df['close'].rolling(window=200, min_periods=1).mean()
+            
+            # Calculate Volume Moving Averages
+            df['ma_volume_7'] = df['volume'].rolling(window=7).mean()
+            df['ma_volume_25'] = df['volume'].rolling(window=25).mean()
+            df['ma_volume_99'] = df['volume'].rolling(window=99).mean()
             
             # Reorder columns
-            df = df[['symbol', 'date', 'timestamp', 'open', 'high', 'low', 'close', 
-                    'volume', 'MA_7', 'MA_25', 'MA_50', 'MA_99', 'MA_200']]
+            df = df[['symbol', 'date', 'open', 'high', 'low', 'close', 
+                    'volume', 'MA_7', 'MA_25', 'MA_99',
+                    'ma_volume_7', 'ma_volume_25', 'ma_volume_99']]
             
             return df
             

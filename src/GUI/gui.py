@@ -5,11 +5,111 @@ Provides visual feedback and control for the Binance Futures Data Fetcher.
 
 import customtkinter as ctk
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, List
 import threading
-from tkinter import messagebox
+import json
+import os
+import webbrowser
+import socket
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs
+from tkinter import messagebox, filedialog
+
+import pandas as pd
 
 from src.GUI.progress_reporter import ProgressReporter, ProgressInfo, ExecutionStage
+
+
+# ---------------------------------------------------------------------------
+#  Lightweight HTTP server for the chart bridge
+# ---------------------------------------------------------------------------
+
+class _ChartRequestHandler(BaseHTTPRequestHandler):
+    """Serves the chart HTML page and handles API requests from JavaScript."""
+
+    def log_message(self, format, *args):
+        """Silence default stderr logging."""
+        pass
+
+    # ---- GET ---------------------------------------------------------------
+    def do_GET(self):
+        parsed = urlparse(self.path)
+
+        if parsed.path in ("/", "/chart"):
+            self._serve_chart_html()
+        elif parsed.path == "/api/latest_data":
+            self._handle_latest_data(parsed)
+        elif parsed.path == "/lightweight-charts.standalone.production.js":
+            self._serve_static_asset("lightweight-charts.standalone.production.js", "application/javascript")
+        elif parsed.path == "/chart.css":
+            self._serve_static_asset("chart.css", "text/css")
+        else:
+            self.send_error(404)
+
+    def _serve_static_asset(self, filename, content_type):
+        assets_dir = os.path.join(os.path.dirname(__file__), "assets")
+        filepath = os.path.join(assets_dir, filename)
+        if not os.path.isfile(filepath):
+            self.send_error(404)
+            return
+        with open(filepath, "rb") as f:
+            data = f.read()
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _serve_chart_html(self):
+        html_bytes = self.server.chart_html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(html_bytes)))
+        self.end_headers()
+        self.wfile.write(html_bytes)
+
+    def _handle_latest_data(self, parsed):
+        """``/api/latest_data?symbol=X&since=Y`` → JSON candle array."""
+        qs = parse_qs(parsed.query)
+        symbol = qs.get("symbol", [""])[0]
+        since_str = qs.get("since", ["0"])[0]
+
+        records: list = []
+        if symbol and self.server.data_fetcher_factory:
+            try:
+                fetcher = self.server.data_fetcher_factory()
+                since_ms = int(since_str) * 1000 + 1
+                df = fetcher.fetch_candles(symbol, since_ms)
+                if df is not None and not df.empty:
+                    df = df.copy()
+                    df["time"] = (df["date"].astype("int64") // 10 ** 9).astype(int)
+                    cols = ["time", "open", "high", "low", "close"]
+                    if "volume" in df.columns:
+                        cols.append("volume")
+                    records = df[cols].to_dict("records")
+            except Exception as e:
+                print(f"[ChartServer] Error fetching latest data: {e}")
+
+        body = json.dumps(records).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body)
+
+
+class _ChartHTTPServer(HTTPServer):
+    """HTTPServer subclass carrying extra state for the chart."""
+    chart_html: str = ""
+    data_fetcher_factory = None  # callable → GetData instance
+
+
+def _find_free_port() -> int:
+    """Return an available TCP port on localhost."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        return s.getsockname()[1]
 
 
 class BinanceFetcherGUI(ctk.CTk):
@@ -22,6 +122,7 @@ class BinanceFetcherGUI(ctk.CTk):
     - Status messages
     - Time range selection
     - Completion notifications
+    - Create Chart button to switch to chart configuration view
     """
     
     def __init__(self):
@@ -29,8 +130,8 @@ class BinanceFetcherGUI(ctk.CTk):
         
         # Window configuration
         self.title("Binance Futures Data Fetcher")
-        self.geometry("700x600")
-        self.minsize(600, 550)
+        self.state("zoomed")  # Start maximized (fullscreen window)
+        self.minsize(600, 600)
         
         # Set appearance
         ctk.set_appearance_mode("dark")
@@ -44,11 +145,17 @@ class BinanceFetcherGUI(ctk.CTk):
         self._is_running = False
         self._worker_thread: Optional[threading.Thread] = None
         
+        # Results storage
+        self._last_filtered_df = None
+
         # Build UI
         self._create_widgets()
+        self._create_chart_config_view()
+        self._create_results_view()
         
-        # Center window
-        self._center_window()
+        # Center window only if not maximized
+        if self.state() != "zoomed":
+            self._center_window()
     
     def _center_window(self):
         """Center the window on screen."""
@@ -241,6 +348,19 @@ class BinanceFetcherGUI(ctk.CTk):
         )
         self.stop_button.pack(side="left", padx=(0, 10))
         
+        # Create Chart button
+        self.create_chart_button = ctk.CTkButton(
+            control_frame,
+            text="📈 Create Chart",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            height=40,
+            width=140,
+            fg_color="#2b8a3e",
+            hover_color="#237032",
+            command=self._show_chart_config_view
+        )
+        self.create_chart_button.pack(side="left", padx=(10, 0))
+        
         # Clear log button
         self.clear_button = ctk.CTkButton(
             control_frame,
@@ -254,6 +374,734 @@ class BinanceFetcherGUI(ctk.CTk):
         )
         self.clear_button.pack(side="right")
     
+    # =========================================================================
+    # Chart Configuration View
+    # =========================================================================
+
+    def _create_chart_config_view(self):
+        """Create the chart configuration view (hidden by default)."""
+        self.chart_config_frame = ctk.CTkFrame(self)
+        # Not packed yet — shown only when user clicks "Create Chart"
+
+        # --- Header ---
+        header_frame = ctk.CTkFrame(self.chart_config_frame, fg_color="transparent")
+        header_frame.pack(fill="x", padx=20, pady=(20, 10))
+
+        back_button = ctk.CTkButton(
+            header_frame,
+            text="← Back",
+            font=ctk.CTkFont(size=13),
+            width=80,
+            height=32,
+            fg_color="gray",
+            hover_color="darkgray",
+            command=self._show_main_view
+        )
+        back_button.pack(side="left")
+
+        title = ctk.CTkLabel(
+            header_frame,
+            text="📈 Create Chart",
+            font=ctk.CTkFont(size=22, weight="bold")
+        )
+        title.pack(side="left", padx=(15, 0))
+
+        # --- Scrollable content area ---
+        content = ctk.CTkFrame(self.chart_config_frame)
+        content.pack(fill="both", expand=True, padx=20, pady=(0, 10))
+
+        # 1️⃣  Timeframe Selection
+        self._build_timeframe_section(content)
+
+        # 2️⃣  Time Range Selection
+        self._build_time_range_section(content)
+
+        # 3️⃣  Coin Selection
+        self._build_coin_selection_section(content)
+
+        # --- Generate button ---
+        btn_frame = ctk.CTkFrame(self.chart_config_frame, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=20, pady=(0, 20))
+
+        self.generate_button = ctk.CTkButton(
+            btn_frame,
+            text="🚀 Generate Chart",
+            font=ctk.CTkFont(size=15, weight="bold"),
+            height=45,
+            width=250,
+            fg_color="#2b8a3e",
+            hover_color="#237032",
+            command=self._on_generate_chart_click
+        )
+        self.generate_button.pack(pady=5)
+
+        # Summary label (updated dynamically)
+        self.chart_summary_label = ctk.CTkLabel(
+            btn_frame,
+            text="",
+            font=ctk.CTkFont(size=12),
+            text_color="gray"
+        )
+        self.chart_summary_label.pack(pady=(5, 0))
+
+    # --- Section builders ---------------------------------------------------
+
+    def _build_timeframe_section(self, parent):
+        """Build the timeframe selection section."""
+        section = ctk.CTkFrame(parent)
+        section.pack(fill="x", pady=(15, 5), padx=15)
+
+        label = ctk.CTkLabel(
+            section,
+            text="1️⃣  Candle Timeframe",
+            font=ctk.CTkFont(size=15, weight="bold")
+        )
+        label.pack(anchor="w", padx=15, pady=(10, 5))
+
+        desc = ctk.CTkLabel(
+            section,
+            text="Select the candle interval for the chart.",
+            font=ctk.CTkFont(size=12),
+            text_color="gray"
+        )
+        desc.pack(anchor="w", padx=15)
+
+        tf_frame = ctk.CTkFrame(section, fg_color="transparent")
+        tf_frame.pack(fill="x", padx=15, pady=(5, 10))
+
+        self.chart_timeframe_var = ctk.StringVar(value="1d")
+        timeframes = ["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w"]
+
+        for i, tf in enumerate(timeframes):
+            btn = ctk.CTkRadioButton(
+                tf_frame,
+                text=tf,
+                variable=self.chart_timeframe_var,
+                value=tf,
+                font=ctk.CTkFont(size=13),
+                command=self._update_chart_summary
+            )
+            btn.grid(row=0, column=i, padx=(0, 18), pady=5)
+
+    def _build_time_range_section(self, parent):
+        """Build the year / time range selection section."""
+        section = ctk.CTkFrame(parent)
+        section.pack(fill="x", pady=(10, 5), padx=15)
+
+        label = ctk.CTkLabel(
+            section,
+            text="2️⃣  Year & Time Range",
+            font=ctk.CTkFont(size=15, weight="bold")
+        )
+        label.pack(anchor="w", padx=15, pady=(10, 5))
+
+        desc = ctk.CTkLabel(
+            section,
+            text="Select a year as the end boundary, then choose how far back to retrieve data.",
+            font=ctk.CTkFont(size=12),
+            text_color="gray",
+            wraplength=550,
+            justify="left"
+        )
+        desc.pack(anchor="w", padx=15)
+
+        # --- Year picker (always visible, mandatory) ---
+        year_frame = ctk.CTkFrame(section, fg_color="transparent")
+        year_frame.pack(fill="x", padx=15, pady=(8, 2))
+
+        year_label = ctk.CTkLabel(
+            year_frame,
+            text="Year:",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            width=120,
+            anchor="w"
+        )
+        year_label.pack(side="left")
+
+        current_year = datetime.now().year
+        year_values = [str(y) for y in range(2020, current_year + 1)]
+
+        self.specific_year_var = ctk.StringVar(value=str(current_year))
+        self.specific_year_combo = ctk.CTkComboBox(
+            year_frame,
+            values=year_values,
+            variable=self.specific_year_var,
+            width=100,
+            command=lambda _: self._update_chart_summary()
+        )
+        self.specific_year_combo.pack(side="left", padx=(10, 0))
+
+        year_hint = ctk.CTkLabel(
+            year_frame,
+            text="(end boundary for retrieved data)",
+            font=ctk.CTkFont(size=11),
+            text_color="gray"
+        )
+        year_hint.pack(side="left", padx=(10, 0))
+
+        # --- Time range relative to the selected year ---
+        range_label = ctk.CTkLabel(
+            section,
+            text="How far back from the selected year:",
+            font=ctk.CTkFont(size=13),
+            anchor="w"
+        )
+        range_label.pack(anchor="w", padx=15, pady=(10, 2))
+
+        range_frame = ctk.CTkFrame(section, fg_color="transparent")
+        range_frame.pack(fill="x", padx=15, pady=(0, 10))
+
+        self.time_range_var = ctk.StringVar(value="from_beginning")
+
+        ranges = [
+            ("from_beginning", "From beginning of year"),
+            ("last_6m", "Last 6 months"),
+            ("last_1y", "Last 1 year"),
+            ("last_2y", "Last 2 years"),
+            ("last_5y", "Last 5 years"),
+        ]
+
+        for i, (value, text) in enumerate(ranges):
+            rb = ctk.CTkRadioButton(
+                range_frame,
+                text=text,
+                variable=self.time_range_var,
+                value=value,
+                font=ctk.CTkFont(size=13),
+                command=self._on_time_range_changed
+            )
+            rb.grid(row=i // 3, column=i % 3, sticky="w", padx=(0, 25), pady=4)
+
+    def _build_coin_selection_section(self, parent):
+        """Build the coin scope selection section."""
+        section = ctk.CTkFrame(parent)
+        section.pack(fill="x", pady=(10, 5), padx=15)
+
+        label = ctk.CTkLabel(
+            section,
+            text="3️⃣  Coin Selection",
+            font=ctk.CTkFont(size=15, weight="bold")
+        )
+        label.pack(anchor="w", padx=15, pady=(10, 5))
+
+        desc = ctk.CTkLabel(
+            section,
+            text="Generate the chart for a single coin or all available coins.",
+            font=ctk.CTkFont(size=12),
+            text_color="gray"
+        )
+        desc.pack(anchor="w", padx=15)
+
+        coin_frame = ctk.CTkFrame(section, fg_color="transparent")
+        coin_frame.pack(fill="x", padx=15, pady=(5, 5))
+
+        self.coin_scope_var = ctk.StringVar(value="all")
+
+        all_rb = ctk.CTkRadioButton(
+            coin_frame,
+            text="All available coins",
+            variable=self.coin_scope_var,
+            value="all",
+            font=ctk.CTkFont(size=13),
+            command=self._on_coin_scope_changed
+        )
+        all_rb.grid(row=0, column=0, sticky="w", padx=(0, 30), pady=4)
+
+        single_rb = ctk.CTkRadioButton(
+            coin_frame,
+            text="Single coin",
+            variable=self.coin_scope_var,
+            value="single",
+            font=ctk.CTkFont(size=13),
+            command=self._on_coin_scope_changed
+        )
+        single_rb.grid(row=0, column=1, sticky="w", padx=(0, 30), pady=4)
+
+        # Single coin entry (shown/hidden dynamically)
+        self.single_coin_frame = ctk.CTkFrame(section, fg_color="transparent")
+        self.single_coin_frame.pack(fill="x", padx=15, pady=(0, 10))
+
+        coin_label = ctk.CTkLabel(
+            self.single_coin_frame,
+            text="Symbol:",
+            font=ctk.CTkFont(size=13),
+            width=55
+        )
+        coin_label.pack(side="left")
+
+        self.single_coin_var = ctk.StringVar(value="BTC/USDT")
+        self.single_coin_entry = ctk.CTkEntry(
+            self.single_coin_frame,
+            textvariable=self.single_coin_var,
+            width=160,
+            placeholder_text="e.g. BTC/USDT"
+        )
+        self.single_coin_entry.pack(side="left", padx=(10, 0))
+
+        coin_hint = ctk.CTkLabel(
+            self.single_coin_frame,
+            text="(Binance Futures USDT-M symbol)",
+            font=ctk.CTkFont(size=11),
+            text_color="gray"
+        )
+        coin_hint.pack(side="left", padx=(10, 0))
+
+        # Hide single coin input by default
+        self.single_coin_frame.pack_forget()
+
+    # --- Dynamic UI callbacks -----------------------------------------------
+
+    def _on_time_range_changed(self):
+        """Update summary when time range selection changes."""
+        self._update_chart_summary()
+
+    def _on_coin_scope_changed(self):
+        """Show/hide the single coin entry based on coin scope selection."""
+        if self.coin_scope_var.get() == "single":
+            self.single_coin_frame.pack(fill="x", padx=15, pady=(0, 10))
+        else:
+            self.single_coin_frame.pack_forget()
+        self._update_chart_summary()
+
+    def _update_chart_summary(self):
+        """Update the dynamic summary label with current selections."""
+        tf = self.chart_timeframe_var.get()
+        tr = self.time_range_var.get()
+        ref_year = self.specific_year_var.get()
+        scope = self.coin_scope_var.get()
+
+        range_labels = {
+            "from_beginning": f"Jan–Dec {ref_year}",
+            "last_6m": f"last 6 months up to end of {ref_year}",
+            "last_1y": f"last 1 year up to end of {ref_year}",
+            "last_2y": f"last 2 years up to end of {ref_year}",
+            "last_5y": f"last 5 years up to end of {ref_year}",
+        }
+        range_text = range_labels.get(tr, tr)
+        coin_text = "all coins" if scope == "all" else f"{self.single_coin_var.get()}"
+
+        summary = f"ℹ️  Will generate {tf} candles for {range_text} — {coin_text}"
+        self.chart_summary_label.configure(text=summary)
+
+    # --- View switching -----------------------------------------------------
+
+    def _show_chart_config_view(self):
+        """Switch from the main view to the chart configuration view."""
+        self.main_frame.pack_forget()
+        self.chart_config_frame.pack(fill="both", expand=True, padx=20, pady=20)
+        self._update_chart_summary()
+
+    def _show_main_view(self):
+        """Switch back to the main view from any other view."""
+        self.chart_config_frame.pack_forget()
+        if hasattr(self, 'results_frame'):
+            self.results_frame.pack_forget()
+        self.main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+    # =========================================================================
+    # Results View (Chart only)
+    # =========================================================================
+
+    def _create_results_view(self):
+        """Create the results view (simplified – chart is in a WebView window)."""
+        self.results_frame = ctk.CTkFrame(self)
+        # Not packed — shown only after chart generation completes
+
+        # --- Header ---
+        header_frame = ctk.CTkFrame(self.results_frame, fg_color="transparent")
+        header_frame.pack(fill="x", padx=20, pady=(20, 10))
+
+        back_btn = ctk.CTkButton(
+            header_frame,
+            text="← Back",
+            font=ctk.CTkFont(size=13),
+            width=80,
+            height=32,
+            fg_color="gray",
+            hover_color="darkgray",
+            command=self._show_main_view
+        )
+        back_btn.pack(side="left")
+
+        title = ctk.CTkLabel(
+            header_frame,
+            text="📈 Chart View",
+            font=ctk.CTkFont(size=22, weight="bold")
+        )
+        title.pack(side="left", padx=(15, 0))
+
+        # --- Info label ---
+        self.results_info_label = ctk.CTkLabel(
+            self.results_frame,
+            text="",
+            font=ctk.CTkFont(size=13),
+            text_color="gray"
+        )
+        self.results_info_label.pack(anchor="w", padx=20, pady=(0, 5))
+
+        # --- Chart status area ---
+        status_area = ctk.CTkFrame(self.results_frame)
+        status_area.pack(fill="both", expand=True, padx=20, pady=(0, 10))
+
+        chart_msg = ctk.CTkLabel(
+            status_area,
+            text="📊 The interactive TradingView chart is displayed\n"
+                 "in its own window.  Use the button below to\n"
+                 "reopen it if you closed it.",
+            font=ctk.CTkFont(size=15),
+            justify="center",
+        )
+        chart_msg.pack(expand=True)
+
+        self._reopen_chart_btn = ctk.CTkButton(
+            status_area,
+            text="🔄  Reopen Chart Window",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            height=42,
+            width=240,
+            fg_color="#2962ff",
+            hover_color="#1e53e5",
+            command=self._reopen_chart_window,
+        )
+        self._reopen_chart_btn.pack(pady=(0, 20))
+
+        # === Bottom buttons ===
+        btn_frame = ctk.CTkFrame(self.results_frame, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=20, pady=(0, 20))
+
+        self.export_filtered_btn = ctk.CTkButton(
+            btn_frame,
+            text="💾 Export Data CSV",
+            font=ctk.CTkFont(size=14),
+            height=40,
+            width=200,
+            fg_color="#555555",
+            hover_color="#444444",
+            command=self._export_filtered_csv,
+        )
+        self.export_filtered_btn.pack(side="left", padx=(0, 10))
+
+        # Chart HTTP server handle (managed externally)
+        self._chart_server = None
+        self._chart_timeframe = "1d"
+
+    # --- WebView chart helpers -----------------------------------------------
+
+    def _prepare_chart_data(self, df: pd.DataFrame) -> str:
+        """
+        Convert a filtered DataFrame into a JSON string consumable by
+        the TradingView Lightweight Charts HTML page.
+
+        Returns JSON of the form::
+
+            {
+                "coins": ["BTC/USDT", ...],
+                "data": {
+                    "BTC/USDT": [
+                        {"time": <unix-sec>, "open": …, "high": …, …},
+                        …
+                    ]
+                }
+            }
+        """
+        result: dict = {"coins": [], "data": {}}
+        coins = sorted(df["symbol"].unique().tolist())
+        result["coins"] = coins
+
+        for coin in coins:
+            coin_df = df[df["symbol"] == coin].sort_values("date").copy()
+            coin_df["time"] = (
+                coin_df["date"].astype("int64") // 10 ** 9
+            ).astype(int)
+
+            cols = ["time", "open", "high", "low", "close"]
+            if "volume" in coin_df.columns:
+                cols.append("volume")
+            for ma_col in ("MA_7", "MA_25", "MA_99",
+                           "ma_volume_7", "ma_volume_25", "ma_volume_99"):
+                if ma_col in coin_df.columns:
+                    cols.append(ma_col)
+
+            records = coin_df[cols].to_dict("records")
+            # Replace NaN MA values with None so they become JSON null
+            for rec in records:
+                for ma_col in ("MA_7", "MA_25", "MA_99",
+                               "ma_volume_7", "ma_volume_25", "ma_volume_99"):
+                    if ma_col in rec and (rec[ma_col] is None or rec[ma_col] != rec[ma_col]):
+                        rec[ma_col] = None
+
+            result["data"][coin] = records
+
+        return json.dumps(result)
+
+    def _launch_chart_in_browser(self, chart_json: str, timeframe: str):
+        """
+        Start a local HTTP server and open the chart in the default browser.
+
+        The HTML template is loaded from ``chart.html`` next to this module.
+        ``INITIAL_DATA`` is replaced with *chart_json* so the chart renders
+        immediately, and ``API_BASE`` is set so JS can call back into Python
+        via ``fetch()``.
+        """
+        # Read the HTML template packaged alongside this module
+        html_path = os.path.join(os.path.dirname(__file__), "assets", "chart.html")
+        with open(html_path, "r", encoding="utf-8") as fh:
+            html_template = fh.read()
+
+        # Pick a free port for this server instance
+        port = _find_free_port()
+
+        # Escape '</' to prevent premature </script> tag termination (XSS)
+        safe_chart_json = chart_json.replace("</", r"<\/")
+
+        # Inject the dataset + API base URL into the page
+        html_content = html_template.replace(
+            "const initialData = INITIAL_DATA;",
+            f"const initialData = {safe_chart_json};",
+        ).replace(
+            "const API_BASE = null;",
+            f'const API_BASE = "http://127.0.0.1:{port}";',
+        )
+
+        # Shut down a previously running chart server
+        self._stop_chart_server()
+
+        # Build the data-fetcher factory (lazy import)
+        def _fetcher_factory():
+            from src.LOGIC.get_data import GetData
+            return GetData(timeframe=timeframe)
+
+        server = _ChartHTTPServer(("127.0.0.1", port), _ChartRequestHandler)
+        server.chart_html = html_content
+        server.data_fetcher_factory = _fetcher_factory
+        self._chart_server = server
+
+        # Run the server in a daemon thread
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+
+        # Open in the default browser
+        webbrowser.open(f"http://127.0.0.1:{port}/chart")
+
+    def _stop_chart_server(self):
+        """Shut down the chart HTTP server if it is running."""
+        if self._chart_server is not None:
+            server = self._chart_server
+            self._chart_server = None
+            try:
+                server.shutdown()
+            except Exception:
+                pass
+            finally:
+                try:
+                    server.server_close()
+                except Exception:
+                    pass
+
+    def _reopen_chart_window(self):
+        """Reopen the chart in the browser using the last generated dataset."""
+        if self._last_filtered_df is None or self._last_filtered_df.empty:
+            messagebox.showwarning("No Data", "Generate chart data first.")
+            return
+        chart_json = self._prepare_chart_data(self._last_filtered_df)
+        self._launch_chart_in_browser(chart_json, self._chart_timeframe)
+
+    def _show_results_view(self, filtered_df, timeframe: str = "1d"):
+        """Switch to the results view and open the interactive chart window."""
+        self.main_frame.pack_forget()
+        self.chart_config_frame.pack_forget()
+
+        n_coins = filtered_df["symbol"].nunique() if filtered_df is not None else 0
+        n_rows = len(filtered_df) if filtered_df is not None else 0
+        self.results_info_label.configure(
+            text=f"  {n_coins} coin(s)  ·  {n_rows} total candles"
+        )
+
+        self.results_frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+        # Launch the TradingView WebView chart
+        if filtered_df is not None and not filtered_df.empty:
+            self._chart_timeframe = timeframe
+            chart_json = self._prepare_chart_data(filtered_df)
+            self._launch_chart_in_browser(chart_json, timeframe)
+
+    def _on_chart_generation_complete(self, n_coins: int, n_rows: int,
+                                      timeframe: str = "1d"):
+        """Handle chart generation completion on the main thread."""
+        self._is_running = False
+        self.start_button.configure(state="normal")
+        self.stop_button.configure(state="disabled")
+        self.create_chart_button.configure(state="normal")
+        self.price_entry.configure(state="normal")
+        self.timeframe_combo.configure(state="normal")
+
+        self.overall_progress.set(1.0)
+        self.overall_percent_label.configure(text="100%")
+        self.stage_progress.set(1.0)
+        self.stage_percent_label.configure(text="100%")
+        self.stage_name_label.configure(text="Stage: Completed")
+
+        self._log_message("=" * 50, timestamp=False)
+        self._log_message(
+            f"✅ Chart generated! {n_coins} coin(s), {n_rows} total candles"
+        )
+
+        # Show results in the chart view
+        if self._last_filtered_df is not None:
+            self._show_results_view(self._last_filtered_df, timeframe)
+
+    def _export_filtered_csv(self):
+        """Export the full filtered dataset to a CSV file."""
+        if self._last_filtered_df is None or self._last_filtered_df.empty:
+            messagebox.showwarning("No Data", "No filtered data to export.")
+            return
+
+        filepath = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            title="Export Full Filtered Data",
+            initialfile="filtered_data.csv",
+        )
+        if filepath:
+            self._last_filtered_df.to_csv(filepath, index=False)
+            messagebox.showinfo(
+                "Exported", f"Full data exported to:\n{filepath}"
+            )
+
+    # --- Generate chart handler -----------------------------------------------
+
+    def _on_generate_chart_click(self):
+        """Handle Generate Chart button click — collect params and start process."""
+        if self._is_running:
+            messagebox.showwarning("Busy", "A process is already running.")
+            return
+
+        # Collect parameters
+        timeframe = self.chart_timeframe_var.get()
+        time_range = self.time_range_var.get()
+        coin_scope = self.coin_scope_var.get()
+        reference_year = self.specific_year_var.get()  # always required
+        single_coin = self.single_coin_var.get().strip() if coin_scope == "single" else None
+
+        # Validate single coin
+        if coin_scope == "single" and not single_coin:
+            messagebox.showerror("Invalid Input", "Please enter a coin symbol (e.g. BTC/USDT).")
+            return
+
+        # Switch back to main view to show progress
+        self._show_main_view()
+
+        # Reset progress
+        self.overall_progress.set(0)
+        self.stage_progress.set(0)
+        self.overall_percent_label.configure(text="0%")
+        self.stage_percent_label.configure(text="0%")
+        self.stage_name_label.configure(text="Stage: Starting chart generation...")
+
+        # Update UI state
+        self._is_running = True
+        self.start_button.configure(state="disabled")
+        self.stop_button.configure(state="normal")
+        self.create_chart_button.configure(state="disabled")
+        self.price_entry.configure(state="disabled")
+        self.timeframe_combo.configure(state="disabled")
+
+        scope_desc = single_coin if single_coin else "all coins"
+
+        self._log_message("=" * 50, timestamp=False)
+        self._log_message("Starting Chart Generation...")
+        self._log_message(f"Timeframe: {timeframe}")
+        self._log_message(f"Reference Year: {reference_year}")
+        self._log_message(f"Time Range: {time_range}")
+        self._log_message(f"Coin Scope: {scope_desc}")
+
+        # Start worker thread
+        self._worker_thread = threading.Thread(
+            target=self._run_chart_generation,
+            args=(timeframe, time_range, reference_year, coin_scope, single_coin),
+            daemon=True
+        )
+        self._worker_thread.start()
+
+    def _run_chart_generation(self, timeframe: str, time_range: str,
+                              reference_year: str, coin_scope: str,
+                              single_coin: Optional[str]):
+        """
+        Run the chart data generation process in a background thread.
+
+        Retrieves pre-existing parquet files from Google Cloud Storage,
+        filters by date range and coin scope, and prepares data
+        for chart display.
+        """
+        try:
+            from src.LOGIC.google_cloud_storage_api import GoogleCloudStorageAPI
+            from src.LOGIC.chart_generator import ChartGenerator
+            from src.core.logger import get_logger
+
+            logger = get_logger(__name__)
+
+            # --- Initialization ---
+            self.progress_reporter.report(
+                ExecutionStage.INITIALIZING, 0.5,
+                "Initializing chart generation..."
+            )
+
+            # --- Authenticate with Google Cloud Storage ---
+            self.progress_reporter.report(
+                ExecutionStage.AUTHENTICATING, 0.0,
+                "Authenticating with Google Cloud Storage..."
+            )
+            storage_api = GoogleCloudStorageAPI(logger=logger)
+            self.progress_reporter.report(
+                ExecutionStage.AUTHENTICATING, 1.0,
+                "Google Cloud Storage authentication successful"
+            )
+
+            if not self._is_running:
+                self.progress_reporter.report_error("Process cancelled by user")
+                return
+
+            # --- Generate chart data from GCS ---
+            generator = ChartGenerator(
+                storage_api=storage_api,
+                progress_reporter=self.progress_reporter,
+                logger=logger
+            )
+
+            filtered_df = generator.generate_chart_data(
+                timeframe=timeframe,
+                time_range=time_range,
+                reference_year=reference_year,
+                coin_scope=coin_scope,
+                single_coin=single_coin,
+                is_running_check=lambda: self._is_running,
+            )
+
+            if filtered_df is None or filtered_df.empty:
+                self.progress_reporter.report_error(
+                    "No data found for the selected criteria. "
+                    "Make sure data has been fetched first using 'Start Process'."
+                )
+                return
+
+            # Store results for display / export
+            self._last_filtered_df = filtered_df
+
+            n_coins = filtered_df['symbol'].nunique()
+            n_rows = len(filtered_df)
+
+            # Schedule UI update on the main thread
+            self.after(0, lambda: self._on_chart_generation_complete(
+                n_coins, n_rows, timeframe))
+
+        except ImportError as e:
+            self.progress_reporter.report_error(
+                f"Missing dependency: {e}. "
+                "Install with: pip install python-dateutil pyarrow"
+            )
+        except Exception as e:
+            self.progress_reporter.report_error(f"Error: {str(e)}")
+
     def _log_message(self, message: str, timestamp: bool = True):
         """Add a message to the status log."""
         self.status_text.configure(state="normal")
@@ -339,13 +1187,13 @@ class BinanceFetcherGUI(ctk.CTk):
         """Run the data fetching process in a background thread."""
         try:
             # Import here to avoid circular imports
-            from src.LOGIC.google_drive_api import GoogleDriveAPI
+            from src.LOGIC.google_cloud_storage_api import GoogleCloudStorageAPI
             from src.LOGIC.get_data import GetData
             from src.LOGIC.save_data import SaveData
-            import logging
+            from src.core.logger import get_logger
             
-            # Setup a simple logger
-            logger = logging.getLogger(__name__)
+            # Setup a logger using centralized config
+            logger = get_logger(__name__)
             
             # Report initialization
             self.progress_reporter.report(
@@ -354,17 +1202,17 @@ class BinanceFetcherGUI(ctk.CTk):
                 "Initializing components..."
             )
             
-            # Initialize Google Drive API
+            # Initialize Google Cloud Storage API
             self.progress_reporter.report(
                 ExecutionStage.AUTHENTICATING,
                 0.0,
-                "Authenticating with Google Drive..."
+                "Authenticating with Google Cloud Storage..."
             )
-            google_drive = GoogleDriveAPI(logger=logger)
+            storage_api = GoogleCloudStorageAPI(logger=logger)
             self.progress_reporter.report(
                 ExecutionStage.AUTHENTICATING,
                 1.0,
-                "Google Drive authentication successful"
+                "Google Cloud Storage authentication successful"
             )
             
             # Initialize data fetcher
@@ -376,7 +1224,7 @@ class BinanceFetcherGUI(ctk.CTk):
             
             # Initialize data saver with timeframe for filename
             data_saver = SaveData(
-                google_drive_api=google_drive,
+                storage_api=storage_api,
                 timeframe=timeframe,
                 logger=logger
             )
@@ -451,7 +1299,7 @@ class BinanceFetcherGUI(ctk.CTk):
                     self.progress_reporter.report(
                         ExecutionStage.UPLOADING,
                         (year_idx + 0.5) / total_years,
-                        f"[Year {year}] Saving {coins_in_year} coins to Google Drive...",
+                        f"[Year {year}] Saving {coins_in_year} coins to Google Cloud Storage...",
                         total_items=total_years,
                         completed_items=year_idx
                     )
@@ -462,7 +1310,7 @@ class BinanceFetcherGUI(ctk.CTk):
                     self.progress_reporter.report(
                         ExecutionStage.UPLOADING,
                         (year_idx + 1) / total_years,
-                        f"[Year {year}] ✓ Saved {coins_in_year} coins to Google Drive",
+                        f"[Year {year}] ✓ Saved {coins_in_year} coins to Google Cloud Storage",
                         total_items=total_years,
                         completed_items=year_idx + 1
                     )
@@ -508,6 +1356,7 @@ class BinanceFetcherGUI(ctk.CTk):
         self._is_running = False
         self.start_button.configure(state="normal")
         self.stop_button.configure(state="disabled")
+        self.create_chart_button.configure(state="normal")
         self.price_entry.configure(state="normal")
         self.timeframe_combo.configure(state="normal")
         
@@ -522,6 +1371,7 @@ class BinanceFetcherGUI(ctk.CTk):
         self._is_running = False
         self.start_button.configure(state="normal")
         self.stop_button.configure(state="disabled")
+        self.create_chart_button.configure(state="normal")
         self.price_entry.configure(state="normal")
         self.timeframe_combo.configure(state="normal")
         
@@ -533,6 +1383,9 @@ class BinanceFetcherGUI(ctk.CTk):
     
     def on_closing(self):
         """Handle window close event."""
+        # Shut down the chart server if it's still running
+        self._stop_chart_server()
+
         if self._is_running:
             if messagebox.askokcancel("Quit", "Process is running. Do you want to quit?"):
                 self._is_running = False
