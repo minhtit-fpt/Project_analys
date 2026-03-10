@@ -12,9 +12,8 @@ from typing import List, Optional
 from collections import defaultdict
 from tqdm import tqdm
 
-from src.core.config import settings
 from src.core.logger import get_logger
-from src.core.constants import DEFAULT_PRICE_THRESHOLD, DEFAULT_TIMEFRAME, OHLCV_COLUMNS
+from src.core.constants import DEFAULT_PRICE_THRESHOLD, DEFAULT_TIMEFRAME
 
 
 class GetData:
