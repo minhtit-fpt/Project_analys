@@ -68,11 +68,6 @@ class ProgressReporter:
         """Register a callback to receive progress updates."""
         self._callbacks.append(callback)
     
-    def remove_callback(self, callback: Callable[[ProgressInfo], None]):
-        """Remove a registered callback."""
-        if callback in self._callbacks:
-            self._callbacks.remove(callback)
-    
     def _notify(self, info: ProgressInfo):
         """Notify all registered callbacks."""
         for callback in self._callbacks:

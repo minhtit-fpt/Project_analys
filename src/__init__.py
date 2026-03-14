@@ -9,10 +9,10 @@ Classes:
     - BinanceFetcherGUI: GUI application class
 """
 
-from src.google_drive_api import GoogleDriveAPI
-from src.get_data import GetData
-from src.save_data import SaveData
-from src.progress_reporter import ProgressReporter, ProgressInfo, ExecutionStage
+from src.LOGIC.google_cloud_storage_api import GoogleCloudStorageAPI
+from src.LOGIC.get_data import GetData
+from src.LOGIC.save_data import SaveData
+from src.GUI.progress_reporter import ProgressReporter, ProgressInfo, ExecutionStage
 
 __all__ = [
     'GoogleCloudStorageAPI',
