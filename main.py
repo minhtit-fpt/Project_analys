@@ -18,12 +18,17 @@ Usage:
 
 import sys
 import argparse
+from datetime import datetime
+from dotenv import load_dotenv
 
 from src.core.config import settings
 from src.core.logger import get_logger
 from src.LOGIC.google_cloud_storage_api import GoogleCloudStorageAPI
 from src.LOGIC.get_data import GetData
 from src.LOGIC.save_data import SaveData
+
+# Load environment variables from .env file
+load_dotenv()
 
 
 class Main:
@@ -173,7 +178,7 @@ def run_cli():
 def run_gui():
     """Run the application in GUI mode."""
     try:
-        from src.GUI.gui import BinanceFetcherGUI
+        from src.GUI.main_window import BinanceFetcherGUI
         
         app = BinanceFetcherGUI()
         app.protocol("WM_DELETE_WINDOW", app.on_closing)
